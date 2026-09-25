@@ -1,13 +1,13 @@
-import type { ReactNode } from 'react';
+import { Stack } from 'expo-router';
+import { useMemo, useState } from 'react';
 import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { ComposeIcon, ICON_SIZE } from './icons';
+import { headerIcons } from './headerIcons';
 import { memoPreview, type Memo } from './memoStorage';
 import { colors } from './theme';
 
 const SIDE_PADDING = 20;
-export const HEADER_HEIGHT = 44;
 
 type Props = {
   memos: Memo[];
@@ -39,8 +39,18 @@ function rowText(memo: Memo) {
   return { title: lines[0] ?? '새로운 메모', preview: lines.slice(1).join(' ') };
 }
 
+// 제목과 본문에 검색어가 들어 있는 메모만 남긴다. (대소문자 무시)
+function matches(memo: Memo, query: string) {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return true;
+  return `${memo.title}\n${memoPreview(memo.content)}`.toLowerCase().includes(needle);
+}
+
 export function MemoList({ memos, onSelect, onCreate, onDelete }: Props) {
   const insets = useSafeAreaInsets();
+  const [query, setQuery] = useState('');
+  const visibleMemos = useMemo(() => memos.filter((memo) => matches(memo, query)), [memos, query]);
+  const searching = query.trim() !== '';
 
   const confirmDelete = (memo: Memo) => {
     Alert.alert('메모 삭제', `'${rowText(memo).title}' 메모를 삭제할까요?`, [
@@ -50,24 +60,37 @@ export function MemoList({ memos, onSelect, onCreate, onDelete }: Props) {
   };
 
   return (
-    <View style={[styles.screen, { paddingTop: insets.top }]}>
-      <View style={styles.header}>
-        <HeaderButton label="새 메모" onPress={onCreate}>
-          <ComposeIcon color={colors.accent} />
-        </HeaderButton>
-      </View>
+    <>
+      <Stack.Title large>메모</Stack.Title>
+      <Stack.SearchBar
+        placeholder="검색"
+        placement="stacked"
+        hideWhenScrolling={false}
+        onChangeText={(event) => setQuery(event.nativeEvent.text)}
+        onCancelButtonPress={() => setQuery('')}
+      />
+      <Stack.Toolbar placement="right">
+        <Stack.Toolbar.Button icon={headerIcons.compose} accessibilityLabel="새 메모" onPress={onCreate} />
+      </Stack.Toolbar>
 
+      {/* 큰 제목이 스크롤에 맞춰 줄어들도록 목록이 화면의 첫 스크롤 뷰여야 한다. */}
       <FlatList
-        data={memos}
+        style={styles.screen}
+        data={visibleMemos}
         keyExtractor={(memo) => memo.id}
+        contentInsetAdjustmentBehavior="automatic"
+        keyboardDismissMode="on-drag"
         contentContainerStyle={{ paddingBottom: insets.bottom + 16 }}
         ListHeaderComponent={
-          <View style={styles.heading}>
-            <Text style={styles.headingTitle}>메모</Text>
-            <Text style={styles.headingCount}>{memos.length}개</Text>
-          </View>
+          memos.length > 0 ? (
+            <Text style={styles.count}>
+              {searching ? `${visibleMemos.length}개 찾음` : `${memos.length}개의 메모`}
+            </Text>
+          ) : null
         }
-        ListEmptyComponent={<Text style={styles.empty}>메모가 없습니다</Text>}
+        ListEmptyComponent={
+          <Text style={styles.empty}>{searching ? '검색 결과가 없습니다' : '메모가 없습니다'}</Text>
+        }
         ItemSeparatorComponent={() => <View style={styles.separator} />}
         renderItem={({ item }) => {
           const { title, preview } = rowText(item);
@@ -90,23 +113,7 @@ export function MemoList({ memos, onSelect, onCreate, onDelete }: Props) {
           );
         }}
       />
-    </View>
-  );
-}
-
-type HeaderButtonProps = { label: string; onPress: () => void; children: ReactNode };
-
-export function HeaderButton({ label, onPress, children }: HeaderButtonProps) {
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      hitSlop={8}
-      onPress={onPress}
-      style={({ pressed }) => [styles.headerButton, pressed && styles.pressed]}
-    >
-      {children}
-    </Pressable>
+    </>
   );
 }
 
@@ -115,37 +122,11 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.paper,
   },
-  header: {
-    height: HEADER_HEIGHT,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'flex-end',
-    paddingHorizontal: SIDE_PADDING - 8,
-  },
-  headerButton: {
-    height: HEADER_HEIGHT,
-    width: ICON_SIZE + 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  pressed: {
-    opacity: 0.4,
-  },
-  heading: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    gap: 8,
+  count: {
     paddingHorizontal: SIDE_PADDING,
     paddingTop: 4,
-    paddingBottom: 12,
-  },
-  headingTitle: {
-    fontSize: 30,
-    fontWeight: '700',
-    color: colors.ink,
-  },
-  headingCount: {
-    fontSize: 15,
+    paddingBottom: 4,
+    fontSize: 13,
     color: colors.muted,
   },
   empty: {

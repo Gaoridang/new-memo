@@ -2,7 +2,7 @@ import { router, useLocalSearchParams, useNavigation } from 'expo-router';
 import { useEffect, useState } from 'react';
 
 import { MemoScreen } from '../../MemoScreen';
-import { loadMemo } from '../../memoStorage';
+import { deleteMemo, loadMemo } from '../../memoStorage';
 
 export default function MemoRoute() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -15,5 +15,13 @@ export default function MemoRoute() {
     navigation.setOptions({ animation: 'default' });
   }, [navigation]);
 
-  return <MemoScreen memo={memo} onOpenList={() => router.back()} />;
+  return (
+    <MemoScreen
+      memo={memo}
+      onDelete={() => {
+        deleteMemo(memo.id);
+        router.back();
+      }}
+    />
+  );
 }

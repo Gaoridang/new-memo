@@ -13,12 +13,20 @@ export default function RootLayout() {
   return (
     <KeyboardProvider>
       <StatusBar style="dark" />
-      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.paper } }}>
-        <Stack.Screen name="index" />
+      <Stack
+        screenOptions={{
+          headerShadowVisible: false,
+          headerTintColor: colors.ink,
+          headerBackButtonDisplayMode: 'minimal',
+          contentStyle: { backgroundColor: colors.paper },
+        }}
+      >
+        <Stack.Screen name="index" options={{ title: '메모' }} />
         <Stack.Screen
           name="memo/[id]"
           // 앱을 켤 때 여는 첫 메모는 목록 위로 밀려 들어오지 않고 바로 보이게 한다.
           options={({ route }) => ({
+            title: '',
             animation: (route.params as { launch?: string } | undefined)?.launch ? 'none' : 'default',
           })}
         />

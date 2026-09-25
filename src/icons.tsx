@@ -120,26 +120,6 @@ export function KeyboardShowIcon({ color }: IconProps) {
   );
 }
 
-export function MemoListIcon({ color }: IconProps) {
-  return (
-    <Icon>
-      <Path d="M3.5 5H16.5 M3.5 10H16.5 M3.5 15H11.5" {...strokeProps(color, 1.8)} />
-    </Icon>
-  );
-}
-
-export function ComposeIcon({ color }: IconProps) {
-  return (
-    <Icon>
-      <Path
-        d="M9.25 3.75H6C4.75 3.75 3.75 4.75 3.75 6V14C3.75 15.25 4.75 16.25 6 16.25H14C15.25 16.25 16.25 15.25 16.25 14V10.75"
-        {...strokeProps(color)}
-      />
-      <Path d="M14.6 3.15L16.85 5.4L10.4 11.85L7.6 12.4L8.15 9.6Z" {...strokeProps(color)} />
-    </Icon>
-  );
-}
-
 // 체크박스 + 반짝임: 할 일 자동 감지
 export function AutoTodoIcon({ color }: IconProps) {
   return (

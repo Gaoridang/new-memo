@@ -1,5 +1,6 @@
+import { Stack, useNavigation } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { StyleSheet, TextInput, View } from 'react-native';
+import { Alert, Share, StyleSheet, TextInput, View } from 'react-native';
 import { KeyboardStickyView, useReanimatedKeyboardAnimation } from 'react-native-keyboard-controller';
 import Animated, { interpolate, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -10,9 +11,8 @@ import {
   type MemoFormatState,
 } from '../modules/memo-editor';
 import { BAR_HEIGHT, FormatBar, type FormatKey } from './FormatBar';
-import { MemoListIcon } from './icons';
-import { HEADER_HEIGHT, HeaderButton } from './MemoList';
-import { isEmptyMemo, type Memo } from './memoStorage';
+import { headerIcons, menuIcon } from './headerIcons';
+import { isEmptyMemo, memoPreview, type Memo } from './memoStorage';
 import { colors } from './theme';
 import { Toast, TOAST_HEIGHT } from './Toast';
 import { useAutoTodo } from './useAutoTodo';
@@ -40,12 +40,14 @@ type FocusedField = 'title' | 'body' | null;
 type Props = {
   // 처음 한 번만 읽는다. 다른 메모를 열 때는 key를 바꿔 화면을 새로 만든다.
   memo: Memo;
-  onOpenList: () => void;
+  // 메모를 지운 뒤 화면을 닫는다.
+  onDelete: () => void;
 };
 
-export function MemoScreen({ memo: initialMemo, onOpenList }: Props) {
+export function MemoScreen({ memo: initialMemo, onDelete }: Props) {
   const insets = useSafeAreaInsets();
-  const { update: updateMemo, flush } = useAutosave(initialMemo);
+  const navigation = useNavigation();
+  const { update: updateMemo, flush, discard, current } = useAutosave(initialMemo);
   const titleRef = useRef<TextInput>(null);
   const editorRef = useRef<MemoEditorHandle>(null);
   const [formatState, setFormatState] = useState<MemoFormatState | null>(null);
@@ -98,24 +100,42 @@ export function MemoScreen({ memo: initialMemo, onOpenList }: Props) {
     }
   }, [focusedField]);
 
-  // 목록이 방금 고친 제목·본문을 보여주도록 먼저 저장하고 연다.
-  const openList = useCallback(() => {
-    if (focusedField === 'body') editorRef.current?.blur();
-    else if (focusedField === 'title') titleRef.current?.blur();
-    flush();
-    onOpenList();
-  }, [focusedField, flush, onOpenList]);
+  // 뒤로 가기 버튼·스와이프로 닫힐 때 목록이 방금 고친 제목·본문을 보여주도록 먼저 저장한다.
+  useEffect(() => navigation.addListener('beforeRemove', flush), [navigation, flush]);
+
+  const shareMemo = useCallback(() => {
+    const { title, content } = current();
+    const message = [title.trim(), memoPreview(content)].filter(Boolean).join('\n\n');
+    if (message) Share.share({ message });
+  }, [current]);
+
+  const confirmDelete = useCallback(() => {
+    Alert.alert('메모 삭제', '이 메모를 삭제할까요?', [
+      { text: '취소', style: 'cancel' },
+      {
+        text: '삭제',
+        style: 'destructive',
+        onPress: () => {
+          discard();
+          onDelete();
+        },
+      },
+    ]);
+  }, [discard, onDelete]);
 
   const blurField = (field: Exclude<FocusedField, null>) =>
     setFocusedField((current) => (current === field ? null : current));
 
   return (
-    <View style={[styles.screen, { paddingTop: insets.top }]}>
-      <View style={styles.header}>
-        <HeaderButton label="메모 목록" onPress={openList}>
-          <MemoListIcon color={colors.icon} />
-        </HeaderButton>
-      </View>
+    <View style={styles.screen}>
+      <Stack.Toolbar placement="right">
+        <Stack.Toolbar.Button icon={headerIcons.share} accessibilityLabel="공유" onPress={shareMemo} />
+        <Stack.Toolbar.Menu icon={headerIcons.more} accessibilityLabel="더보기">
+          <Stack.Toolbar.MenuAction icon={menuIcon('trash')} destructive onPress={confirmDelete}>
+            삭제
+          </Stack.Toolbar.MenuAction>
+        </Stack.Toolbar.Menu>
+      </Stack.Toolbar>
       <TextInput
         ref={titleRef}
         style={styles.title}
@@ -198,12 +218,6 @@ const styles = StyleSheet.create({
   screen: {
     flex: 1,
     backgroundColor: colors.paper,
-  },
-  header: {
-    height: HEADER_HEIGHT,
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: SIDE_PADDING - 8,
   },
   title: {
     fontSize: 20,

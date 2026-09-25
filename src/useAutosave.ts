@@ -22,6 +22,17 @@ export function useAutosave(initial: Memo) {
     saveMemo({ ...memo, updatedAt: Date.now() });
   }, []);
 
+  // 메모를 지울 때는 남은 저장을 버려서 화면이 닫히며 다시 저장되지 않게 한다.
+  const discard = useCallback(() => {
+    if (timer.current) {
+      clearTimeout(timer.current);
+      timer.current = null;
+    }
+    saved.current = latest.current;
+  }, []);
+
+  const current = useCallback(() => latest.current, []);
+
   const update = useCallback(
     (patch: Partial<Memo>) => {
       latest.current = { ...latest.current, ...patch };
@@ -42,5 +53,5 @@ export function useAutosave(initial: Memo) {
     };
   }, [flush]);
 
-  return { update, flush };
+  return { update, flush, discard, current };
 }
