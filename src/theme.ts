@@ -10,3 +10,11 @@ export const colors = {
   barBorder: 'rgba(0, 0, 0, 0.06)',
   highlight: '#F2F2F7',
 } as const;
+
+// 서식 바와 알림처럼 본문 위에 떠 있는 알약 모양 표면
+export const floatingSurface = {
+  backgroundColor: colors.paper,
+  borderWidth: 0.5,
+  borderColor: colors.barBorder,
+  boxShadow: '0px 6px 20px rgba(0, 0, 0, 0.10), 0px 1px 3px rgba(0, 0, 0, 0.06)',
+} as const;

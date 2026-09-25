@@ -3,6 +3,7 @@ import { Pressable, StyleSheet, View } from 'react-native';
 
 import type { MemoFormatState } from '../modules/memo-editor';
 import {
+  AutoTodoIcon,
   BoldIcon,
   BulletListIcon,
   CheckboxIcon,
@@ -14,7 +15,7 @@ import {
   UnderlineIcon,
   type IconProps,
 } from './icons';
-import { colors } from './theme';
+import { colors, floatingSurface } from './theme';
 
 export type FormatKey = 'bold' | 'underline' | 'strikethrough' | 'checkbox' | 'bullet' | 'number';
 
@@ -43,7 +44,9 @@ type Props = {
   formatState: MemoFormatState | null;
   formattingEnabled: boolean;
   keyboardVisible: boolean;
+  autoTodoEnabled: boolean;
   onFormat: (key: FormatKey) => void;
+  onToggleAutoTodo: () => void;
   onToggleKeyboard: () => void;
 };
 
@@ -51,7 +54,9 @@ export function FormatBar({
   formatState,
   formattingEnabled,
   keyboardVisible,
+  autoTodoEnabled,
   onFormat,
+  onToggleAutoTodo,
   onToggleKeyboard,
 }: Props) {
   const isActive = (key: FormatKey) => {
@@ -89,6 +94,11 @@ export function FormatBar({
       {INLINE_ITEMS.map(renderItem)}
       <View style={styles.separator} />
       {PARAGRAPH_ITEMS.map(renderItem)}
+      <View style={styles.separator} />
+      {/* 서식이 아니라 모드라서 제목을 편집할 때도 켜고 끌 수 있다. */}
+      <BarButton label="할 일 자동 감지" active={autoTodoEnabled} onPress={onToggleAutoTodo}>
+        <AutoTodoIcon color={autoTodoEnabled ? colors.accent : colors.icon} />
+      </BarButton>
       <View style={styles.separator} />
       <BarButton label={keyboardVisible ? '키보드 내리기' : '키보드 올리기'} onPress={onToggleKeyboard}>
         {keyboardVisible ? (
@@ -131,10 +141,8 @@ const styles = StyleSheet.create({
     height: BAR_HEIGHT,
     paddingHorizontal: 8,
     borderRadius: BAR_HEIGHT / 2,
-    backgroundColor: colors.paper,
+    ...floatingSurface,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.barBorder,
-    boxShadow: '0px 6px 20px rgba(0, 0, 0, 0.10), 0px 1px 3px rgba(0, 0, 0, 0.06)',
   },
   button: {
     height: BAR_HEIGHT,

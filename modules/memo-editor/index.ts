@@ -4,5 +4,6 @@ export type {
   MemoEditorHandle,
   MemoEditorProps,
   MemoFormatState,
+  MemoLeaveParagraphEvent,
   MemoListKind,
 } from './src/MemoEditor';

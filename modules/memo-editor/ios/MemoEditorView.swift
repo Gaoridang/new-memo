@@ -5,6 +5,7 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
   let onChangeContent = EventDispatcher()
   let onChangeFormat = EventDispatcher()
   let onFocusChange = EventDispatcher()
+  let onLeaveParagraph = EventDispatcher()
 
   let textView: MemoTextView
   private let layoutManager: NSLayoutManager
@@ -36,6 +37,8 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
   private var pendingStamp: (before: NSString, attributes: [NSAttributedString.Key: Any])?
   private var lastContent: String?
   private var lastFormat: (inline: InlineFlags, block: MemoBlock)?
+  /// 커서가 있는 문단. 고친 문단에서 커서가 떠나면 JS에 알린다. (할 일 자동 감지)
+  private var activeParagraph: (index: Int, text: String, edited: Bool)?
 
   private var storage: NSTextStorage { textView.textStorage }
   private var string: NSString { textView.textStorage.string as NSString }
@@ -196,6 +199,28 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
     structureDidChange()
   }
 
+  /// index번째 문단의 내용이 text이고 종류가 from일 때만 to로 바꾼다. 커서와 스크롤은 그대로 둔다.
+  func setParagraphBlock(index: Int, text: String, from: String, to: String) -> Bool {
+    guard let fromBlock = MemoBlock(rawValue: from), let toBlock = MemoBlock(rawValue: to) else { return false }
+    let paragraphs = string.memoParagraphs()
+    guard index >= 0, index < paragraphs.count else { return false }
+    let paragraph = paragraphs[index]
+    guard paragraph.length > 0,
+          contentText(of: paragraph) == text,
+          blockOf(paragraph).kind == fromBlock.kind else { return false }
+
+    endKeyboardComposition()
+    let selection = textView.selectedRange
+    let offset = textView.contentOffset
+    storage.beginEditing()
+    setBlock(toBlock, for: paragraph)
+    storage.endEditing()
+    textView.selectedRange = selection
+    textView.contentOffset = offset
+    structureDidChange()
+    return true
+  }
+
   @objc private func handleCheckboxTap(_ gesture: UITapGestureRecognizer) {
     guard gesture.state == .ended, let paragraph = checkboxParagraph(at: gesture.location(in: textView)) else { return }
     storage.beginEditing()
@@ -272,18 +297,24 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
     refreshDecorations()
     emitContentIfChanged()
     emitFormat()
+    trackActiveParagraph(edited: true)
   }
 
   func textViewDidChangeSelection(_ textView: UITextView) {
     syncTypingAttributes()
     emitFormat()
+    if textView.isFirstResponder {
+      trackActiveParagraph(edited: false)
+    }
   }
 
   func textViewDidBeginEditing(_ textView: UITextView) {
     onFocusChange(["focused": true])
+    trackActiveParagraph(edited: false)
   }
 
   func textViewDidEndEditing(_ textView: UITextView) {
+    leaveActiveParagraph()
     onFocusChange(["focused": false])
   }
 
@@ -329,6 +360,45 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
       suffix += 1
     }
     return NSRange(location: prefix, length: newLength - prefix - suffix)
+  }
+
+  private func contentText(of paragraph: NSRange) -> String {
+    string.substring(with: string.memoContentRange(of: paragraph))
+  }
+
+  private func paragraphIndex(at location: Int) -> Int {
+    let string = self.string
+    let end = min(location, string.length)
+    var index = 0
+    for i in 0..<end where string.character(at: i) == 0x0A {
+      index += 1
+    }
+    return index
+  }
+
+  private func trackActiveParagraph(edited: Bool) {
+    let location = textView.selectedRange.location
+    let index = paragraphIndex(at: location)
+    if let active = activeParagraph, active.index != index {
+      leaveActiveParagraph()
+    }
+    let wasEdited = activeParagraph?.edited ?? false
+    activeParagraph = (index, contentText(of: string.memoParagraph(at: location)), wasEdited || edited)
+  }
+
+  /// 고친 일반 문단에서 커서가 떠났으면 그 문단을 알린다. 줄 나누기·합치기로 내용이 바뀌었으면 알리지 않는다.
+  private func leaveActiveParagraph() {
+    guard let active = activeParagraph else { return }
+    activeParagraph = nil
+    guard active.edited else { return }
+    let paragraphs = string.memoParagraphs()
+    guard active.index < paragraphs.count else { return }
+    let paragraph = paragraphs[active.index]
+    let text = contentText(of: paragraph)
+    guard text == active.text,
+          blockOf(paragraph) == .paragraph,
+          !text.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+    onLeaveParagraph(["index": active.index, "text": text])
   }
 
   private func blockOf(_ paragraph: NSRange) -> MemoBlock {

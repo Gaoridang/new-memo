@@ -1,7 +1,7 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { StyleSheet, TextInput, View } from 'react-native';
 import { KeyboardStickyView, useReanimatedKeyboardAnimation } from 'react-native-keyboard-controller';
-import Animated, { interpolate, useAnimatedStyle } from 'react-native-reanimated';
+import Animated, { interpolate, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import {
@@ -14,12 +14,16 @@ import { MemoListIcon } from './icons';
 import { HEADER_HEIGHT, HeaderButton } from './MemoList';
 import { isEmptyMemo, type Memo } from './memoStorage';
 import { colors } from './theme';
+import { Toast, TOAST_HEIGHT } from './Toast';
+import { useAutoTodo } from './useAutoTodo';
 import { useAutosave } from './useAutosave';
 
 // 컨트롤 바와 키보드(키보드가 없으면 화면 하단 안전 영역) 사이 간격
 const BAR_MARGIN = 10;
 // 본문 끝과 컨트롤 바 사이 간격
 const EDITOR_BAR_GAP = 8;
+// 알림과 컨트롤 바 사이 간격
+const TOAST_GAP = 8;
 const SIDE_PADDING = 20;
 
 const FORMAT_ACTIONS: Record<FormatKey, (editor: MemoEditorHandle) => Promise<void>> = {
@@ -46,6 +50,16 @@ export function MemoScreen({ memo: initialMemo, onOpenList }: Props) {
   const editorRef = useRef<MemoEditorHandle>(null);
   const [formatState, setFormatState] = useState<MemoFormatState | null>(null);
   const [focusedField, setFocusedField] = useState<FocusedField>(null);
+  const titleText = useRef(initialMemo.title);
+  const getTitle = useCallback(() => titleText.current, []);
+  const autoTodo = useAutoTodo(editorRef, getTitle);
+
+  // 알림이 떠 있는 동안에는 본문도 그만큼 위에서 끝나 커서 줄을 가리지 않는다.
+  const toastSpace = useSharedValue(0);
+  const toastVisible = autoTodo.toast !== null;
+  useEffect(() => {
+    toastSpace.value = withTiming(toastVisible ? TOAST_HEIGHT + TOAST_GAP : 0, { duration: 180 });
+  }, [toastSpace, toastVisible]);
 
   // 컨트롤 바는 KeyboardStickyView로 키보드를 따라 올라가고,
   // 본문은 같은 계산으로 바로 위에서 끝나도록 아래 공간을 함께 늘린다.
@@ -57,7 +71,8 @@ export function MemoScreen({ memo: initialMemo, onOpenList }: Props) {
         -keyboardHeight.value +
         interpolate(progress.value, [0, 1], [barRestOffset, BAR_MARGIN]) +
         BAR_HEIGHT +
-        EDITOR_BAR_GAP,
+        EDITOR_BAR_GAP +
+        toastSpace.value,
     }),
     [barRestOffset],
   );
@@ -115,7 +130,10 @@ export function MemoScreen({ memo: initialMemo, onOpenList }: Props) {
         submitBehavior="submit"
         returnKeyType="next"
         onSubmitEditing={() => editorRef.current?.focus()}
-        onChangeText={(title) => updateMemo({ title })}
+        onChangeText={(title) => {
+          titleText.current = title;
+          updateMemo({ title });
+        }}
         onFocus={() => setFocusedField('title')}
         onBlur={() => blurField('title')}
       />
@@ -133,13 +151,30 @@ export function MemoScreen({ memo: initialMemo, onOpenList }: Props) {
         placeholderColor={colors.placeholder}
         insetHorizontal={SIDE_PADDING}
         insetTop={14}
-        onChangeContent={(event) => updateMemo({ content: event.nativeEvent.content })}
+        onChangeContent={(event) => {
+          autoTodo.noteEdit();
+          updateMemo({ content: event.nativeEvent.content });
+        }}
+        onLeaveParagraph={(event) => autoTodo.onLeaveParagraph(event.nativeEvent)}
         onChangeFormat={(event) => setFormatState(event.nativeEvent)}
         onFocusChange={(event) =>
           event.nativeEvent.focused ? setFocusedField('body') : blurField('body')
         }
       />
       <Animated.View style={bottomSpaceStyle} />
+
+      {/* 알림은 따로 띄운다. 서식 바 dock 밖으로 삐져나오면 iOS가 터치를 전달하지 않는다. */}
+      {autoTodo.toast && (
+        <KeyboardStickyView
+          style={styles.barDock}
+          offset={{
+            closed: -(barRestOffset + BAR_HEIGHT + TOAST_GAP),
+            opened: -(BAR_MARGIN + BAR_HEIGHT + TOAST_GAP),
+          }}
+        >
+          <Toast toast={autoTodo.toast} />
+        </KeyboardStickyView>
+      )}
 
       <KeyboardStickyView
         style={styles.barDock}
@@ -149,7 +184,9 @@ export function MemoScreen({ memo: initialMemo, onOpenList }: Props) {
           formatState={formatState}
           formattingEnabled={focusedField !== 'title'}
           keyboardVisible={focusedField !== null}
+          autoTodoEnabled={autoTodo.enabled}
           onFormat={handleFormat}
+          onToggleAutoTodo={autoTodo.toggle}
           onToggleKeyboard={toggleKeyboard}
         />
       </KeyboardStickyView>

@@ -139,3 +139,18 @@ export function ComposeIcon({ color }: IconProps) {
     </Icon>
   );
 }
+
+// 체크박스 + 반짝임: 할 일 자동 감지
+export function AutoTodoIcon({ color }: IconProps) {
+  return (
+    <Icon>
+      <Rect x={2.75} y={6} width={11} height={11} rx={2.75} {...strokeProps(color)} />
+      <Path d="M5.6 11.6L7.4 13.4L10.9 9.6" {...strokeProps(color)} />
+      <Path
+        d="M15.5 1.9L16.15 3.85L18.1 4.5L16.15 5.15L15.5 7.1L14.85 5.15L12.9 4.5L14.85 3.85Z"
+        fill={color}
+        {...strokeProps(color, 0.8)}
+      />
+    </Icon>
+  );
+}

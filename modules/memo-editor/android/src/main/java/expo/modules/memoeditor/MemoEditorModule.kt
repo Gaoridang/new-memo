@@ -17,7 +17,7 @@ class MemoEditorModule : Module() {
     Name("MemoEditor")
 
     View(MemoEditorView::class) {
-      Events("onChangeContent", "onChangeFormat", "onFocusChange")
+      Events("onChangeContent", "onChangeFormat", "onFocusChange", "onLeaveParagraph")
 
       Prop("initialContent") { view: MemoEditorView, value: String? ->
         view.setInitialContent(value)
@@ -76,6 +76,9 @@ class MemoEditorModule : Module() {
       }
       AsyncFunction("toggleBlock") { view: MemoEditorView, kind: String ->
         view.toggleBlock(kind)
+      }
+      AsyncFunction("setParagraphBlock") { view: MemoEditorView, index: Int, text: String, from: String, to: String ->
+        view.setParagraphBlock(index, text, from, to)
       }
     }
   }

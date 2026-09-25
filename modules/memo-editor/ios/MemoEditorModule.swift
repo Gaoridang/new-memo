@@ -5,7 +5,7 @@ public class MemoEditorModule: Module {
     Name("MemoEditor")
 
     View(MemoEditorView.self) {
-      Events("onChangeContent", "onChangeFormat", "onFocusChange")
+      Events("onChangeContent", "onChangeFormat", "onFocusChange", "onLeaveParagraph")
 
       Prop("initialContent") { (view: MemoEditorView, value: String?) in
         view.setInitialContent(value)
@@ -64,6 +64,10 @@ public class MemoEditorModule: Module {
 
       AsyncFunction("toggleBlock") { (view: MemoEditorView, kind: String) in
         view.toggleBlock(named: kind)
+      }.runOnQueue(.main)
+
+      AsyncFunction("setParagraphBlock") { (view: MemoEditorView, index: Int, text: String, from: String, to: String) -> Bool in
+        view.setParagraphBlock(index: index, text: text, from: from, to: to)
       }.runOnQueue(.main)
     }
   }

@@ -25,6 +25,7 @@ class MemoEditorView(context: Context, appContext: AppContext) :
   private val onChangeContent by EventDispatcher()
   private val onChangeFormat by EventDispatcher()
   private val onFocusChange by EventDispatcher()
+  private val onLeaveParagraph by EventDispatcher()
 
   override val shouldUseAndroidLayout = true
 
@@ -64,6 +65,10 @@ class MemoEditorView(context: Context, appContext: AppContext) :
   private var lastContent: String? = null
   private var lastFormat: Pair<InlineFlags, MemoBlock>? = null
 
+  /** 커서가 있는 문단. 고친 문단에서 커서가 떠나면 JS에 알린다. (할 일 자동 감지) */
+  private data class ActiveParagraph(val index: Int, val text: String, val edited: Boolean)
+  private var activeParagraph: ActiveParagraph? = null
+
   private val inputMethodManager: InputMethodManager
     get() = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
 
@@ -96,6 +101,7 @@ class MemoEditorView(context: Context, appContext: AppContext) :
       }
       emitContentIfChanged()
       emitFormat()
+      if (editText.isFocused) trackActiveParagraph(edited = true)
     }
   }
 
@@ -114,7 +120,10 @@ class MemoEditorView(context: Context, appContext: AppContext) :
     }
     editText.listener = this
     editText.addTextChangedListener(watcher)
-    editText.setOnFocusChangeListener { _, focused -> onFocusChange(mapOf("focused" to focused)) }
+    editText.setOnFocusChangeListener { _, focused ->
+      if (focused) trackActiveParagraph(edited = false) else leaveActiveParagraph()
+      onFocusChange(mapOf("focused" to focused))
+    }
     addView(editText)
     updatePadding()
   }
@@ -310,6 +319,29 @@ class MemoEditorView(context: Context, appContext: AppContext) :
     emitFormat()
   }
 
+  /** index번째 문단의 내용이 expected이고 종류가 from일 때만 to로 바꾼다. 커서와 스크롤은 그대로 둔다. */
+  fun setParagraphBlock(index: Int, expected: String, from: String, to: String): Boolean {
+    val text = editText.text ?: return false
+    val paragraphs = MemoDocument.paragraphs(text)
+    if (index < 0 || index >= paragraphs.size) return false
+    val paragraph = paragraphs[index]
+    if (paragraph.isEmpty || contentText(text, paragraph) != expected) return false
+    if (MemoDocument.blockOf(text, paragraph).kind != MemoBlock.fromRaw(from).kind) return false
+
+    endComposition()
+    applying = true
+    try {
+      MemoDocument.setBlock(text, paragraph, MemoBlock.fromRaw(to), theme)
+      MemoDocument.normalize(text, theme)
+    } finally {
+      applying = false
+    }
+    editText.invalidate()
+    emitContentIfChanged()
+    emitFormat()
+    return true
+  }
+
   private fun applyBlock(text: Editable, paragraph: Paragraph, block: MemoBlock) {
     val placeholderOnly = !paragraph.isEmpty && text[paragraph.start] == PLACEHOLDER &&
       !MemoDocument.hasVisibleContent(text, paragraph) && paragraph.end == text.length
@@ -398,6 +430,42 @@ class MemoEditorView(context: Context, appContext: AppContext) :
     inputMethodManager.restartInput(editText)
   }
 
+  private fun contentText(text: CharSequence, paragraph: Paragraph): String =
+    text.subSequence(paragraph.start, MemoDocument.contentEnd(text, paragraph)).toString()
+      .replace(PLACEHOLDER.toString(), "")
+
+  private fun paragraphIndex(text: CharSequence, offset: Int): Int {
+    var index = 0
+    for (i in 0 until offset.coerceIn(0, text.length)) {
+      if (text[i] == '\n') index++
+    }
+    return index
+  }
+
+  private fun trackActiveParagraph(edited: Boolean) {
+    val text = editText.text ?: return
+    val offset = editText.selectionStart.coerceAtLeast(0)
+    val index = paragraphIndex(text, offset)
+    if (activeParagraph?.let { it.index != index } == true) leaveActiveParagraph()
+    val wasEdited = activeParagraph?.edited ?: false
+    activeParagraph = ActiveParagraph(index, contentText(text, MemoDocument.paragraphAt(text, offset)), wasEdited || edited)
+  }
+
+  /** 고친 일반 문단에서 커서가 떠났으면 그 문단을 알린다. 줄 나누기·합치기로 내용이 바뀌었으면 알리지 않는다. */
+  private fun leaveActiveParagraph() {
+    val active = activeParagraph ?: return
+    activeParagraph = null
+    if (!active.edited) return
+    val text = editText.text ?: return
+    val paragraphs = MemoDocument.paragraphs(text)
+    if (active.index >= paragraphs.size) return
+    val paragraph = paragraphs[active.index]
+    val content = contentText(text, paragraph)
+    if (content != active.text || content.isBlank()) return
+    if (MemoDocument.blockOf(text, paragraph) != MemoBlock.PARAGRAPH) return
+    onLeaveParagraph(mapOf("index" to active.index, "text" to content))
+  }
+
   private fun insertionFlags(position: Int): InlineFlags {
     val text = editText.text ?: return InlineFlags()
     val paragraph = MemoDocument.paragraphAt(text, position)
@@ -426,6 +494,7 @@ class MemoEditorView(context: Context, appContext: AppContext) :
       return
     }
     emitFormat()
+    if (editText.isFocused) trackActiveParagraph(edited = false)
   }
 
   override fun onBackspace(): Boolean {
