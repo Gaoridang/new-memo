@@ -25,9 +25,10 @@ Run lint and typecheck before declaring any task done.
 
 ## Navigation & Routing
 
-- Use **Expo Router** for all navigation. Routes live in `src/app/` — every file there is a screen, `_layout.tsx` files define navigators. Keep non-route code (components, hooks, utils) outside `src/app/`.
-- Import `Link`, `router`, and `useLocalSearchParams` from `expo-router`.
-- Docs: https://docs.expo.dev/router/introduction.md
+- Use **Expo Router** for all navigation (`main` is `expo-router/entry`). Routes live in `src/app/` — every file there is a screen, `_layout.tsx` defines the root Stack. Keep non-route code (components, hooks, storage) in `src/` outside `src/app/`.
+  - `src/app/index.tsx` — memo list (stack root; on app start it pushes the most recent memo once)
+  - `src/app/memo/[id].tsx` — editor for one memo; the header list button is `router.back()`
+- Import `router`, `Stack`, and `useLocalSearchParams` from `expo-router`. Docs: https://docs.expo.dev/router/introduction.md
 
 ## Building with EAS
 
