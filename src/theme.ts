@@ -9,6 +9,8 @@ export const colors = {
   accent: '#007AFF',
   barBorder: 'rgba(0, 0, 0, 0.06)',
   highlight: '#F2F2F7',
+  // 목록에서 스레드로 이어진 메모 왼쪽의 세로선
+  thread: '#D1D1D6',
 } as const;
 
 // 서식 바와 알림처럼 본문 위에 떠 있는 알약 모양 표면

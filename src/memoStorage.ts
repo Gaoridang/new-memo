@@ -1,5 +1,7 @@
 import { Directory, File, Paths } from 'expo-file-system';
 
+import { forgetMemoLinks } from './memoLinks';
+
 export type Memo = {
   id: string;
   title: string;
@@ -126,6 +128,7 @@ export function deleteMemo(id: string) {
     const file = new File(memoDir(), `${id}.json`);
     if (!file.exists) return;
     file.delete();
+    forgetMemoLinks(id);
     notify();
   } catch (error) {
     console.warn('메모를 삭제하지 못했습니다.', error);

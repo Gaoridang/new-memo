@@ -1,8 +1,9 @@
 import { router, useLocalSearchParams, useNavigation } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 import { MemoScreen } from '../../MemoScreen';
 import { deleteMemo, loadMemo } from '../../memoStorage';
+import { suggestRelatedMemos } from '../../relatedMemos';
 
 export default function MemoRoute() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -15,9 +16,15 @@ export default function MemoRoute() {
     navigation.setOptions({ animation: 'default' });
   }, [navigation]);
 
+  // 목록으로 돌아가면 방금 고친 메모와 이어지는 메모를 찾아 제안한다.
+  const suggestRelated = useCallback(() => {
+    suggestRelatedMemos(memo.id);
+  }, [memo.id]);
+
   return (
     <MemoScreen
       memo={memo}
+      onClose={suggestRelated}
       onDelete={() => {
         deleteMemo(memo.id);
         router.back();

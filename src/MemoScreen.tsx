@@ -42,9 +42,11 @@ type Props = {
   memo: Memo;
   // 메모를 지운 뒤 화면을 닫는다.
   onDelete: () => void;
+  // 화면이 닫힐 때, 마지막 저장을 마친 뒤에 부른다.
+  onClose: () => void;
 };
 
-export function MemoScreen({ memo: initialMemo, onDelete }: Props) {
+export function MemoScreen({ memo: initialMemo, onDelete, onClose }: Props) {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
   const { update: updateMemo, flush, discard, current } = useAutosave(initialMemo);
@@ -101,7 +103,14 @@ export function MemoScreen({ memo: initialMemo, onDelete }: Props) {
   }, [focusedField]);
 
   // 뒤로 가기 버튼·스와이프로 닫힐 때 목록이 방금 고친 제목·본문을 보여주도록 먼저 저장한다.
-  useEffect(() => navigation.addListener('beforeRemove', flush), [navigation, flush]);
+  useEffect(
+    () =>
+      navigation.addListener('beforeRemove', () => {
+        flush();
+        onClose();
+      }),
+    [navigation, flush, onClose],
+  );
 
   const shareMemo = useCallback(() => {
     const { title, content } = current();
