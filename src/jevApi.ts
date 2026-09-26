@@ -1,3 +1,5 @@
+import { isDoodleId, type DoodleId } from './doodles/catalog';
+
 // 서버 라우트(src/app/api)를 거쳐 Jev(TypeSafe AI)에 묻는다.
 // 네트워크나 서버 문제로 답을 받지 못하면 null — 부르는 쪽은 그냥 아무것도 하지 않으면 된다.
 
@@ -48,6 +50,28 @@ export type PasteKind = 'heading' | 'paragraph' | 'bullet' | 'number' | 'todo' |
 export async function classifyPaste(title: string, lines: string[]): Promise<PasteKind[] | null> {
   const data = await post<{ kinds?: unknown }>('/api/structure', { title, lines }, 6000);
   return Array.isArray(data?.kinds) && data.kinds.length === lines.length ? (data.kinds as PasteKind[]) : null;
+}
+
+/** 줄의 start부터 length만큼(UTF-16)이 word이고, 그 뒤에 id 그림을 그린다. confidence(0-1)가 높을수록 확실하다. */
+export type DoodleSuggestion = { id: DoodleId; word: string; start: number; length: number; confidence: number };
+
+/** 그림을 붙일 낱말이 없으면 { doodle: null }, 답을 받지 못하면 null */
+export async function suggestDoodle(
+  title: string,
+  line: string,
+  nearby: string[],
+): Promise<{ doodle: DoodleSuggestion | null } | null> {
+  const data = await post<{ doodle?: Partial<DoodleSuggestion> | null }>('/api/doodle', { title, line, nearby }, 5000);
+  if (data?.doodle === null) return { doodle: null };
+  const doodle = data?.doodle;
+  if (!doodle || !isDoodleId(doodle.id) || typeof doodle.start !== 'number' || typeof doodle.length !== 'number') {
+    return null;
+  }
+  // 보낸 줄에서 그 자리의 글자가 word와 같을 때만 믿는다.
+  const word = line.slice(doodle.start, doodle.start + doodle.length);
+  if (!word || word !== doodle.word) return null;
+  const confidence = typeof doodle.confidence === 'number' ? doodle.confidence : 0;
+  return { doodle: { id: doodle.id, word, start: doodle.start, length: doodle.length, confidence } };
 }
 
 export type SearchLine = { title: string; text: string };

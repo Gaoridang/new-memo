@@ -1,20 +1,18 @@
-import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { AccessibilityInfo, Alert } from 'react-native';
 
 import type { MemoBlockKind, MemoEditorHandle, MemoLeaveParagraphEvent } from '../modules/memo-editor';
 import { dueShort } from './dueLabel';
 import { classifyPaste, detectTodo, type PasteKind, type TodoVerdict } from './jevApi';
-import { memoBlocks, type MemoBlock } from './memoStorage';
+import { memoBlocks, nearbyLines, type MemoBlock } from './memoStorage';
 import { loadSettings, saveSettings } from './settings';
-import type { ToastMessage } from './Toast';
+import type { ShowToast } from './Toast';
+import type { EditorIdle } from './useEditorIdle';
 
-// 타이핑이 이만큼 멈췄을 때만 문단을 바꾼다. 한글을 조합하는 중에 서식을 바꾸면 글자가 깨질 수 있다.
-const IDLE_MS = 700;
 const MIN_LENGTH = 2;
 // 판단에 함께 보내는 주변 줄 (위로 몇 줄, 아래로 몇 줄)
 const NEARBY_BEFORE = 3;
 const NEARBY_AFTER = 2;
-const TOAST_MS = 2000;
 // 한 번에 이만큼 넘게 줄이 늘면 붙여넣기로 본다. (타이핑은 줄 바꿈마다 한 줄씩 는다)
 const PASTE_MIN_LINES = 3;
 const PASTE_MAX_LINES = 60;
@@ -37,61 +35,25 @@ const PASTE_BLOCKS: Partial<Record<Exclude<PasteKind, null>, MemoBlockKind>> = {
  * 바꿀 때 알림은 띄우지 않는다. 편집기의 되돌리기로 되돌린 줄은 이 화면에서 다시 바꾸지 않는다.
  */
 export function useAutoTodo(
-  editorRef: RefObject<MemoEditorHandle | null>,
   getTitle: () => string,
   getContent: () => string,
   onDue: (line: string, due: string | null) => void,
+  idle: EditorIdle,
+  showToast: ShowToast,
 ) {
   const [enabled, setEnabled] = useState(() => loadSettings().autoTodo);
-  const [toast, setToast] = useState<ToastMessage | null>(null);
   const enabledRef = useRef(enabled);
-  const lastEditAt = useRef(0);
   const verdicts = useRef(new Map<string, TodoVerdict>());
   const undone = useRef(new Set<string>());
-  const timers = useRef(new Set<ReturnType<typeof setTimeout>>());
-  const toastId = useRef(0);
 
-  const later = useCallback((callback: () => void, ms: number) => {
-    const timer = setTimeout(() => {
-      timers.current.delete(timer);
-      callback();
-    }, ms);
-    timers.current.add(timer);
-  }, []);
-
-  useEffect(() => {
-    const pending = timers.current;
-    return () => {
-      for (const timer of pending) clearTimeout(timer);
-      pending.clear();
-    };
-  }, []);
-
-  const showToast = useCallback(
-    (message: string, muted = false) => {
-      const id = ++toastId.current;
-      setToast({ id, message, muted });
-      AccessibilityInfo.announceForAccessibility(message);
-      later(() => setToast((current) => (current?.id === id ? null : current)), TOAST_MS);
-    },
-    [later],
-  );
-
+  const { whenIdle: whenEditorIdle } = idle;
   /** 타이핑이 멈추면 한 번 실행한다. 그 사이 기능을 껐으면 실행하지 않는다. */
   const whenIdle = useCallback(
-    (callback: (editor: MemoEditorHandle) => void) => {
-      const attempt = () => {
-        const wait = IDLE_MS - (Date.now() - lastEditAt.current);
-        if (wait > 0) {
-          later(attempt, wait);
-          return;
-        }
-        const editor = editorRef.current;
-        if (editor && enabledRef.current) callback(editor);
-      };
-      attempt();
-    },
-    [editorRef, later],
+    (callback: (editor: MemoEditorHandle) => void) =>
+      whenEditorIdle((editor) => {
+        if (enabledRef.current) callback(editor);
+      }),
+    [whenEditorIdle],
   );
 
   const convertTodo = useCallback(
@@ -106,13 +68,14 @@ export function useAutoTodo(
   );
 
   const onLeaveParagraph = useCallback(
-    async ({ index, text }: MemoLeaveParagraphEvent) => {
-      if (!enabledRef.current) return;
+    async ({ index, text, block }: MemoLeaveParagraphEvent) => {
+      // 목록 줄은 이미 모양이 정해져 있으니 묻지 않는다.
+      if (!enabledRef.current || block !== 'paragraph') return;
       const line = text.trim();
       if (line.length < MIN_LENGTH || undone.current.has(line)) return;
 
       const title = getTitle().trim();
-      const nearby = nearbyLines(memoBlocks(getContent()), index, text);
+      const nearby = nearbyLines(memoBlocks(getContent()), index, text, NEARBY_BEFORE, NEARBY_AFTER);
       const key = JSON.stringify([title, line, nearby]);
       let verdict = verdicts.current.get(key);
       if (verdict === undefined) {
@@ -167,7 +130,6 @@ export function useAutoTodo(
    */
   const onChangeContent = useCallback(
     (previous: string, next: string, fromHistory: boolean) => {
-      lastEditAt.current = Date.now();
       if (fromHistory) {
         for (const line of revertedTodos(memoBlocks(previous), memoBlocks(next))) undone.current.add(line);
         return;
@@ -184,7 +146,7 @@ export function useAutoTodo(
       enabledRef.current = next;
       setEnabled(next);
       saveSettings(next ? { autoTodo: true, autoTodoConsented: true } : { autoTodo: false });
-      showToast(next ? '할 일 자동 감지를 켰어요' : '할 일 자동 감지를 껐어요', !next);
+      showToast(next ? '할 일 자동 감지를 켰어요' : '할 일 자동 감지를 껐어요', { muted: !next });
     },
     [showToast],
   );
@@ -208,21 +170,7 @@ export function useAutoTodo(
     );
   }, [apply]);
 
-  return { enabled, toggle, toast, onLeaveParagraph, onChangeContent };
-}
-
-/**
- * index번째 문단 주변의 줄들. (체크박스 표시는 붙이지 않는다 — 붙이면 오히려 판단이 흐려졌다)
- * 문서의 그 문단이 text와 다르면(순서가 어긋났으면) 엉뚱한 맥락 대신 빈 배열을 돌려준다.
- */
-function nearbyLines(blocks: MemoBlock[], index: number, text: string): string[] {
-  if (index >= blocks.length || blocks[index].text.trim() !== text.trim()) return [];
-  return [
-    ...blocks.slice(Math.max(0, index - NEARBY_BEFORE), index),
-    ...blocks.slice(index + 1, index + 1 + NEARBY_AFTER),
-  ]
-    .map((block) => block.text.trim())
-    .filter(Boolean);
+  return { enabled, toggle, onLeaveParagraph, onChangeContent };
 }
 
 /** 체크박스였다가 일반 문단으로 돌아간 줄들 */

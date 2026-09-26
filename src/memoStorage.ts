@@ -144,9 +144,10 @@ export function deleteMemo(id: string) {
   }
 }
 
-export type MemoBlock = { type: string; checked: boolean; text: string };
+// doodle은 문단에 두들이 붙은 낱말이 있는지
+export type MemoBlock = { type: string; checked: boolean; text: string; doodle: boolean };
 
-type DocumentBlock = { type?: unknown; checked?: unknown; runs?: { text?: unknown }[] };
+type DocumentBlock = { type?: unknown; checked?: unknown; runs?: { text?: unknown; doodle?: unknown }[] };
 
 // 에디터 문서의 문단들. 서식은 빼고 글자와 문단 종류만 남긴다.
 export function memoBlocks(content: string): MemoBlock[] {
@@ -157,10 +158,22 @@ export function memoBlocks(content: string): MemoBlock[] {
       type: typeof block.type === 'string' ? block.type : 'paragraph',
       checked: block.checked === true,
       text: (block.runs ?? []).map((run) => (typeof run.text === 'string' ? run.text : '')).join(''),
+      doodle: (block.runs ?? []).some((run) => typeof run.doodle === 'string'),
     }));
   } catch {
     return [];
   }
+}
+
+/**
+ * index번째 문단 위아래의 줄들. Jev에 맥락으로 함께 보낸다. (체크박스 표시는 붙이지 않는다 — 붙이면 오히려 판단이 흐려졌다)
+ * 문서의 그 문단이 text와 다르면(순서가 어긋났으면) 엉뚱한 맥락 대신 빈 배열을 돌려준다.
+ */
+export function nearbyLines(blocks: MemoBlock[], index: number, text: string, before: number, after: number): string[] {
+  if (index >= blocks.length || blocks[index].text.trim() !== text.trim()) return [];
+  return [...blocks.slice(Math.max(0, index - before), index), ...blocks.slice(index + 1, index + 1 + after)]
+    .map((block) => block.text.trim())
+    .filter(Boolean);
 }
 
 // 에디터 문서에서 서식을 뺀 본문 텍스트 (문단은 줄바꿈으로 잇는다)

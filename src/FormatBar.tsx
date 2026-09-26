@@ -1,5 +1,5 @@
 import type { ComponentType, ReactNode } from 'react';
-import { Pressable, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, useWindowDimensions, View } from 'react-native';
 
 import type { MemoFormatState } from '../modules/memo-editor';
 import {
@@ -8,6 +8,7 @@ import {
   BulletListIcon,
   BUTTON_ICON_SIZE,
   CheckboxIcon,
+  DoodleIcon,
   ICON_SIZE,
   KeyboardDismissIcon,
   NumberedListIcon,
@@ -37,17 +38,27 @@ const PARAGRAPH_ITEMS: FormatItem[] = [
   { key: 'number', label: '번호 목록', Icon: NumberedListIcon },
 ];
 
-// 누르기 쉽도록 버튼마다 권장 크기(44pt)에 가까운 자리를 준다. 버튼 여덟 개가 좁은 화면(375pt)에도 들어간다.
-const BUTTON_WIDTH = 42;
+// 누르기 쉽도록 버튼마다 권장 크기(44pt)에 가까운 자리를 주되, 버튼 아홉 개가 화면 너비에 들어가도록 줄인다.
+// (좁은 화면 375pt에서 37pt, 393pt에서 39pt)
+const MAX_BUTTON_WIDTH = 42;
+const BUTTON_COUNT = 9;
+const SEPARATOR_COUNT = 3;
 const SEPARATOR_GUTTER = 2;
+const BAR_PADDING = 6;
+// 서식 바와 화면 가장자리 사이에 남기는 최소 여백
+const SCREEN_MARGIN = 8;
 export const BAR_HEIGHT = 48;
 
 type Props = {
   formatState: MemoFormatState | null;
   formattingEnabled: boolean;
   autoTodoEnabled: boolean;
+  // 이 메모에 두들이 붙어 있는지, 메모를 훑는 중인지
+  doodled: boolean;
+  doodling: boolean;
   onFormat: (key: FormatKey) => void;
   onToggleAutoTodo: () => void;
+  onPressDoodles: () => void;
   onDismissKeyboard: () => void;
 };
 
@@ -56,10 +67,20 @@ export function FormatBar({
   formatState,
   formattingEnabled,
   autoTodoEnabled,
+  doodled,
+  doodling,
   onFormat,
   onToggleAutoTodo,
+  onPressDoodles,
   onDismissKeyboard,
 }: Props) {
+  const { width: screenWidth } = useWindowDimensions();
+  const separators = SEPARATOR_COUNT * (SEPARATOR_GUTTER * 2 + StyleSheet.hairlineWidth);
+  const buttonWidth = Math.min(
+    MAX_BUTTON_WIDTH,
+    Math.floor((screenWidth - SCREEN_MARGIN * 2 - BAR_PADDING * 2 - separators) / BUTTON_COUNT),
+  );
+
   const isActive = (key: FormatKey) => {
     if (!formatState) return false;
     switch (key) {
@@ -81,6 +102,7 @@ export function FormatBar({
       <BarButton
         key={key}
         label={label}
+        width={buttonWidth}
         active={active}
         disabled={disabled}
         onPress={() => onFormat(key)}
@@ -97,11 +119,18 @@ export function FormatBar({
       {PARAGRAPH_ITEMS.map(renderItem)}
       <View style={styles.separator} />
       {/* 서식이 아니라 모드라서 제목을 편집할 때도 켜고 끌 수 있다. */}
-      <BarButton label="할 일 자동 감지" active={autoTodoEnabled} onPress={onToggleAutoTodo}>
+      <BarButton label="할 일 자동 감지" width={buttonWidth} active={autoTodoEnabled} onPress={onToggleAutoTodo}>
         <AutoTodoIcon color={autoTodoEnabled ? colors.accent : colors.icon} size={BUTTON_ICON_SIZE} />
       </BarButton>
+      <BarButton label="두들" width={buttonWidth} active={doodled} busy={doodling} onPress={onPressDoodles}>
+        {doodling ? (
+          <ActivityIndicator size="small" color={colors.accent} />
+        ) : (
+          <DoodleIcon color={doodled ? colors.accent : colors.icon} size={BUTTON_ICON_SIZE} />
+        )}
+      </BarButton>
       <View style={styles.separator} />
-      <BarButton label="키보드 내리기" onPress={onDismissKeyboard}>
+      <BarButton label="키보드 내리기" width={buttonWidth} onPress={onDismissKeyboard}>
         <KeyboardDismissIcon color={colors.icon} size={BUTTON_ICON_SIZE} />
       </BarButton>
     </View>
@@ -110,21 +139,23 @@ export function FormatBar({
 
 type BarButtonProps = {
   label: string;
+  width: number;
   active?: boolean;
+  busy?: boolean;
   disabled?: boolean;
   onPress: () => void;
   children: ReactNode;
 };
 
-function BarButton({ label, active = false, disabled = false, onPress, children }: BarButtonProps) {
+function BarButton({ label, width, active = false, busy = false, disabled = false, onPress, children }: BarButtonProps) {
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={label}
-      accessibilityState={{ selected: active, disabled }}
+      accessibilityState={{ selected: active, disabled, busy }}
       disabled={disabled}
       onPress={onPress}
-      style={({ pressed }) => [styles.button, pressed && styles.pressed]}
+      style={({ pressed }) => [styles.button, { width }, pressed && styles.pressed]}
     >
       {children}
     </Pressable>
@@ -136,14 +167,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     height: BAR_HEIGHT,
-    paddingHorizontal: 6,
+    paddingHorizontal: BAR_PADDING,
     borderRadius: BAR_HEIGHT / 2,
     ...floatingSurface,
     borderWidth: StyleSheet.hairlineWidth,
   },
   button: {
     height: BAR_HEIGHT,
-    width: BUTTON_WIDTH,
     alignItems: 'center',
     justifyContent: 'center',
   },

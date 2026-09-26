@@ -21,9 +21,11 @@ import { BUTTON_ICON_SIZE, ComposeIcon, MemoListIcon, RedoIcon, UndoIcon } from 
 import { HEADER_HEIGHT, HEADER_PADDING, HeaderButton } from './MemoList';
 import { memoBlocks, type Memo } from './memoStorage';
 import { colors } from './theme';
-import { Toast, TOAST_HEIGHT } from './Toast';
+import { Toast, TOAST_HEIGHT, useToast } from './Toast';
+import { useAutoDoodle } from './useAutoDoodle';
 import { useAutoTodo } from './useAutoTodo';
 import { useAutosave } from './useAutosave';
+import { useEditorIdle } from './useEditorIdle';
 
 // iOS는 컨트롤 바를 키보드의 inputAccessoryView로 붙여 시스템이 키보드와 한 몸으로 움직이게 한다.
 // (하드웨어 키보드면 화면 아래 안전 영역에 띄운다) Android에는 그런 자리가 없어 키보드 위치를 프레임마다 따라간다.
@@ -95,7 +97,10 @@ export function MemoScreen({ memo: initialMemo, listOpen, onOpenList, onNewMemo 
     },
     [updateMemo],
   );
-  const autoTodo = useAutoTodo(editorRef, getTitle, getContent, setDue);
+  const toast = useToast();
+  const idle = useEditorIdle(editorRef);
+  const autoTodo = useAutoTodo(getTitle, getContent, setDue, idle, toast.show);
+  const autoDoodle = useAutoDoodle(getTitle, getContent, idle, toast.show);
   // 제목 칸과 본문이 함께 쓰는 키보드 위 컨트롤 바 (iOS). 화면마다 달라야 다른 메모 화면의 것을 찾지 않는다.
   const accessoryID = `memo-format-bar-${initialMemo.id}`;
 
@@ -116,7 +121,7 @@ export function MemoScreen({ memo: initialMemo, listOpen, onOpenList, onNewMemo 
   // Android: 알림이 떠 있는 동안에는 본문도 그만큼 위에서 끝나 커서 줄을 가리지 않는다.
   // (iOS는 알림도 키보드 위 컨트롤 바에 함께 들어가 키보드 높이에 포함된다)
   const toastSpace = useSharedValue(0);
-  const toastVisible = editing && autoTodo.toast !== null;
+  const toastVisible = editing && toast.toast !== null;
   useEffect(() => {
     toastSpace.value = withTiming(toastVisible ? TOAST_HEIGHT + TOAST_GAP : 0, { duration: 180 });
   }, [toastSpace, toastVisible]);
@@ -225,8 +230,11 @@ export function MemoScreen({ memo: initialMemo, listOpen, onOpenList, onNewMemo 
       formatState={formatState}
       formattingEnabled={barField === 'body'}
       autoTodoEnabled={autoTodo.enabled}
+      doodled={autoDoodle.decorated}
+      doodling={autoDoodle.scanning}
       onFormat={handleFormat}
       onToggleAutoTodo={autoTodo.toggle}
+      onPressDoodles={autoDoodle.press}
       onDismissKeyboard={dismissKeyboard}
     />
   );
@@ -286,14 +294,20 @@ export function MemoScreen({ memo: initialMemo, listOpen, onOpenList, onNewMemo 
         insetHorizontal={SIDE_PADDING}
         insetTop={14}
         accessoryID={accessoryID}
+        doodleArt={autoDoodle.art}
         onChangeContent={(event) => {
           const { content, fromHistory } = event.nativeEvent;
           const previous = contentText.current;
           contentText.current = content;
+          idle.markEdited();
           autoTodo.onChangeContent(previous, content, fromHistory);
+          autoDoodle.onChangeContent(previous, content, fromHistory);
           updateMemo({ content });
         }}
-        onLeaveParagraph={(event) => autoTodo.onLeaveParagraph(event.nativeEvent)}
+        onLeaveParagraph={(event) => {
+          autoTodo.onLeaveParagraph(event.nativeEvent);
+          autoDoodle.onLeaveParagraph(event.nativeEvent);
+        }}
         onChangeFormat={(event) => setFormatState(event.nativeEvent)}
         onChangeHistory={(event) => setHistory(event.nativeEvent)}
         onFocusChange={(event) =>
@@ -306,15 +320,15 @@ export function MemoScreen({ memo: initialMemo, listOpen, onOpenList, onNewMemo 
         // 제목이나 본문을 편집할 때만 키보드와 함께 나타난다.
         <InputAccessoryView nativeID={accessoryID}>
           <View style={styles.accessory}>
-            {autoTodo.toast && <Toast toast={autoTodo.toast} />}
+            {toast.toast && <Toast toast={toast.toast} />}
             {formatBar}
           </View>
         </InputAccessoryView>
       ) : (
         <>
-          {editing && autoTodo.toast && (
+          {editing && toast.toast && (
             <Animated.View style={[styles.barDock, toastStyle]}>
-              <Toast toast={autoTodo.toast} />
+              <Toast toast={toast.toast} />
             </Animated.View>
           )}
           {/* 키보드를 따라 움직이도록 늘 그려 둔다. 편집 중이 아니면 화면 아래에 숨어 있다. */}

@@ -258,6 +258,11 @@ object MemoDocument {
     )
   }
 
+  /** index 글자가 속한 두들 낱말의 두들 이름 */
+  fun doodleAt(text: Spanned, index: Int): String? =
+    text.getSpans(index, index + 1, MemoDoodleSpan::class.java)
+      .firstOrNull { text.getSpanStart(it) <= index && text.getSpanEnd(it) > index }?.id
+
   /** 범위 안의 모든 글자(줄바꿈, 자리 표시 제외)에 걸린 서식 */
   fun commonFlags(text: Spanned, start: Int, end: Int): InlineFlags? {
     var result: InlineFlags? = null
@@ -345,6 +350,7 @@ object MemoDocument {
     }
   }
 
+  /** 저장 형식은 iOS와 같다. runs의 doodle은 두들을 붙인 낱말의 글자에만 있고, 값은 두들 이름이다. */
   fun serialize(text: Spanned): String {
     val blocks = JSONArray()
     for (paragraph in paragraphs(text)) {
@@ -352,6 +358,7 @@ object MemoDocument {
       val runs = JSONArray()
       val piece = StringBuilder()
       var current: InlineFlags? = null
+      var currentDoodle: String? = null
       fun flush() {
         val flags = current ?: return
         if (piece.isEmpty()) return
@@ -360,6 +367,7 @@ object MemoDocument {
           if (flags.bold) put("bold", true)
           if (flags.underline) put("underline", true)
           if (flags.strikethrough) put("strikethrough", true)
+          currentDoodle?.let { put("doodle", it) }
         })
         piece.clear()
       }
@@ -367,8 +375,10 @@ object MemoDocument {
         val char = text[i]
         if (char == PLACEHOLDER) continue
         val flags = flagsAt(text, i)
-        if (flags != current) flush()
+        val doodle = doodleAt(text, i)
+        if (flags != current || doodle != currentDoodle) flush()
         current = flags
+        currentDoodle = doodle
         piece.append(char)
       }
       flush()
@@ -410,6 +420,9 @@ object MemoDocument {
           result.length,
           InlineFlags(run.optBoolean("bold"), run.optBoolean("underline"), run.optBoolean("strikethrough"))
         )
+        run.optString("doodle").takeIf { it.isNotEmpty() }?.let {
+          result.setSpan(MemoDoodleSpan(it), start, result.length, SPAN_FLAGS)
+        }
       }
 
       val isLast = index == blocks.length() - 1

@@ -73,6 +73,15 @@ struct MemoTheme {
   var lineSpacing: CGFloat { round(fontSize * 0.28) }
   var listIndent: CGFloat { round(fontSize * 1.55) }
   var markerSize: CGFloat { round(fontSize) }
+  /// 두들 칩. 줄 높이보다 조금 크게 하되 위아래 줄의 칩 사이는 뜨게 한다. 두들은 칩 안에 글자만 하게 그린다.
+  var doodleMetrics: DoodleMetrics {
+    DoodleMetrics(
+      chipHeight: lineHeight + min(2, max(0, lineSpacing - 3)),
+      doodleSize: round(fontSize),
+      padLeft: round(fontSize * 0.28),
+      innerGap: round(fontSize * 0.17),
+      padRight: round(fontSize * 0.28))
+  }
 
   func font(bold: Bool) -> UIFont {
     .systemFont(ofSize: fontSize, weight: bold ? .bold : .regular)
@@ -162,7 +171,8 @@ extension NSString {
   }
 }
 
-/// 저장 형식: { version, blocks: [{ type, checked?, runs: [{ text, bold?, underline?, strikethrough? }] }] }
+/// 저장 형식: { version, blocks: [{ type, checked?, runs: [{ text, bold?, underline?, strikethrough?, doodle? }] }] }
+/// doodle은 두들을 붙인 낱말의 글자에만 있고, 값은 두들 이름이다.
 enum MemoDocument {
   private struct Content: Codable {
     var version: Int
@@ -180,6 +190,7 @@ enum MemoDocument {
     var bold: Bool?
     var underline: Bool?
     var strikethrough: Bool?
+    var doodle: String?
   }
 
   static func block(in text: NSAttributedString, at location: Int) -> MemoBlock {
@@ -198,11 +209,13 @@ enum MemoDocument {
       if content.length > 0 {
         text.enumerateAttributes(in: content) { attributes, range, _ in
           let flags = InlineFlags(attributes)
+          let doodle = (attributes[.memoDoodle] as? MemoDoodleMark)?.id
           let piece = string.substring(with: range)
           if var last = runs.last,
              (last.bold ?? false) == flags.bold,
              (last.underline ?? false) == flags.underline,
-             (last.strikethrough ?? false) == flags.strikethrough {
+             (last.strikethrough ?? false) == flags.strikethrough,
+             last.doodle == doodle {
             last.text += piece
             runs[runs.count - 1] = last
           } else {
@@ -210,7 +223,8 @@ enum MemoDocument {
               text: piece,
               bold: flags.bold ? true : nil,
               underline: flags.underline ? true : nil,
-              strikethrough: flags.strikethrough ? true : nil))
+              strikethrough: flags.strikethrough ? true : nil,
+              doodle: doodle))
           }
         }
       }
@@ -247,7 +261,11 @@ enum MemoDocument {
         // 저장 데이터에 줄바꿈이 섞여 있어도 문단 구조가 깨지지 않도록 공백으로 바꾼다.
         let text = run.text.replacingOccurrences(of: "\n", with: " ")
         let flags = InlineFlags(bold: run.bold ?? false, underline: run.underline ?? false, strikethrough: run.strikethrough ?? false)
-        result.append(NSAttributedString(string: text, attributes: theme.attributes(block: type, inline: flags)))
+        var attributes = theme.attributes(block: type, inline: flags)
+        if let doodle = run.doodle {
+          attributes[.memoDoodle] = MemoDoodleMark(id: doodle)
+        }
+        result.append(NSAttributedString(string: text, attributes: attributes))
       }
 
       if !isLast {

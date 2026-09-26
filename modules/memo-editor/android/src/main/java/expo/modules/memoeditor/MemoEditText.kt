@@ -3,6 +3,8 @@ package expo.modules.memoeditor
 import android.annotation.SuppressLint
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Canvas
+import android.text.Layout
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.inputmethod.EditorInfo
@@ -25,7 +27,26 @@ interface MemoEditTextListener {
 class MemoEditText(context: Context) : EditText(context) {
   // EditText 생성자 안에서도 선택 변경 콜백이 불리므로 나중에 연결한다.
   var listener: MemoEditTextListener? = null
+  /** 글자보다 먼저 그릴 것 (두들 칩). 좌표는 글 배치(layout) 기준이다. */
+  var underlay: ((Canvas, Layout) -> Unit)? = null
   private var pressedCheckbox: Int? = null
+
+  override fun onDraw(canvas: Canvas) {
+    val layout = layout
+    val underlay = underlay
+    if (layout != null && underlay != null) {
+      canvas.save()
+      // TextView처럼 위아래 여백으로 스크롤되어 들어간 부분은 가린다. 옆으로는 칩 여백이 조금 나갈 수 있게 둔다.
+      val maxScrollY = layout.height - (height - extendedPaddingTop - extendedPaddingBottom)
+      val clipTop = if (scrollY == 0) 0 else extendedPaddingTop + scrollY
+      val clipBottom = height + scrollY - if (scrollY >= maxScrollY) 0 else extendedPaddingBottom
+      canvas.clipRect(scrollX, clipTop, scrollX + width, clipBottom)
+      canvas.translate(totalPaddingLeft.toFloat(), totalPaddingTop.toFloat())
+      underlay(canvas, layout)
+      canvas.restore()
+    }
+    super.onDraw(canvas)
+  }
 
   override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
     val base = super.onCreateInputConnection(outAttrs) ?: return null

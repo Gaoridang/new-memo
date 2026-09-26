@@ -8,6 +8,34 @@ struct ParagraphBlockChange: Record {
   @Field var to: String = ""
 }
 
+/// index번째 문단의 내용이 text이고 start부터 length만큼(UTF-16)이 word이면 그 낱말 뒤에 id 두들을 붙인다.
+struct DoodleChange: Record {
+  @Field var index: Int = 0
+  @Field var text: String = ""
+  @Field var start: Int = 0
+  @Field var length: Int = 0
+  @Field var word: String = ""
+  @Field var id: String = ""
+}
+
+/// 두들 그림 한 겹 (24x24 격자, M·L·C·Q·Z 경로, '#RRGGBB' 색)
+struct DoodleOpRecord: Record {
+  @Field var d: String = ""
+  @Field var fill: String?
+  @Field var stroke: String?
+  @Field var width: Double?
+  @Field var opacity: Double?
+  @Field var dx: Double?
+  @Field var dy: Double?
+}
+
+/// 두들 그림 하나와, 두들을 붙인 낱말을 감싸는 칩의 색
+struct DoodleArtRecord: Record {
+  @Field var id: String = ""
+  @Field var ops: [DoodleOpRecord] = []
+  @Field var chipFill: String?
+}
+
 public class MemoEditorModule: Module {
   public func definition() -> ModuleDefinition {
     Name("MemoEditor")
@@ -48,6 +76,9 @@ public class MemoEditorModule: Module {
       Prop("accessoryID") { (view: MemoEditorView, value: String?) in
         view.textView.accessoryID = value
       }
+      Prop("doodleArt") { (view: MemoEditorView, value: [DoodleArtRecord]?) in
+        view.doodleArt = MemoDoodles.parseArt(value ?? [])
+      }
 
       OnViewDidUpdateProps { (view: MemoEditorView) in
         view.didUpdateProps()
@@ -79,6 +110,14 @@ public class MemoEditorModule: Module {
 
       AsyncFunction("setParagraphBlocks") { (view: MemoEditorView, changes: [ParagraphBlockChange]) -> [Bool] in
         view.setParagraphBlocks(changes)
+      }.runOnQueue(.main)
+
+      AsyncFunction("setDoodles") { (view: MemoEditorView, changes: [DoodleChange], explicit: Bool) -> [Bool] in
+        view.setDoodles(changes, explicit: explicit)
+      }.runOnQueue(.main)
+
+      AsyncFunction("removeDoodles") { (view: MemoEditorView) -> Int in
+        view.removeDoodles()
       }.runOnQueue(.main)
 
       AsyncFunction("undo") { (view: MemoEditorView) in

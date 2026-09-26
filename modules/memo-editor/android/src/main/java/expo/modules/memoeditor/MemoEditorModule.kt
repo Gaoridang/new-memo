@@ -29,6 +29,63 @@ class ParagraphBlockChange : Record {
   val to: String = ""
 }
 
+/** index번째 문단의 내용이 text이고 start부터 length만큼(UTF-16)이 word이면 그 낱말 뒤에 id 두들을 붙인다. */
+class DoodleChange : Record {
+  @Field
+  val index: Int = 0
+
+  @Field
+  val text: String = ""
+
+  @Field
+  val start: Int = 0
+
+  @Field
+  val length: Int = 0
+
+  @Field
+  val word: String = ""
+
+  @Field
+  val id: String = ""
+}
+
+/** 두들 그림 한 겹 (24x24 격자, M·L·C·Q·Z 경로, '#RRGGBB' 색) */
+class DoodleOpRecord : Record {
+  @Field
+  val d: String = ""
+
+  @Field
+  val fill: String? = null
+
+  @Field
+  val stroke: String? = null
+
+  @Field
+  val width: Double? = null
+
+  @Field
+  val opacity: Double? = null
+
+  @Field
+  val dx: Double? = null
+
+  @Field
+  val dy: Double? = null
+}
+
+/** 두들 그림 하나와, 두들을 붙인 낱말을 감싸는 칩의 색 */
+class DoodleArtRecord : Record {
+  @Field
+  val id: String = ""
+
+  @Field
+  val ops: List<DoodleOpRecord> = emptyList()
+
+  @Field
+  val chipFill: String? = null
+}
+
 class MemoEditorModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("MemoEditor")
@@ -73,6 +130,9 @@ class MemoEditorModule : Module() {
       }
       // iOS에서 키보드 위에 붙일 컨트롤 바. Android에는 그런 자리가 없어 JS가 키보드를 따라 띄운다.
       Prop("accessoryID") { _: MemoEditorView, _: String? -> }
+      Prop("doodleArt") { view: MemoEditorView, value: List<DoodleArtRecord>? ->
+        view.setDoodleArt(value ?: emptyList())
+      }
 
       OnViewDidUpdateProps { view: MemoEditorView ->
         view.didUpdateProps()
@@ -98,6 +158,12 @@ class MemoEditorModule : Module() {
       }
       AsyncFunction("setParagraphBlocks") { view: MemoEditorView, changes: List<ParagraphBlockChange> ->
         view.setParagraphBlocks(changes)
+      }
+      AsyncFunction("setDoodles") { view: MemoEditorView, changes: List<DoodleChange>, explicit: Boolean ->
+        view.setDoodles(changes, explicit)
+      }
+      AsyncFunction("removeDoodles") { view: MemoEditorView ->
+        view.removeDoodles()
       }
       AsyncFunction("undo") { view: MemoEditorView ->
         view.undo()
