@@ -63,8 +63,11 @@ export type MemoEditorHandle = {
 /** fromHistory는 되돌리기·다시 하기로 바뀐 경우 */
 export type MemoChangeContentEvent = { content: string; fromHistory: boolean };
 
-/** 고친 문단에서 커서가 떠났을 때 (줄 바꿈, 다른 줄로 이동, 포커스 해제) */
-export type MemoLeaveParagraphEvent = { index: number; text: string; block: MemoBlockKind };
+/**
+ * 고친 문단에서 커서가 떠났을 때 (줄 바꿈, 다른 줄로 이동, 포커스 해제). block은 그 문단의 종류로,
+ * checkbox는 체크하지 않은 체크박스, checked는 체크한 체크박스다.
+ */
+export type MemoLeaveParagraphEvent = { index: number; text: string; block: MemoBlockKind | 'checked' };
 
 export type MemoEditorProps = ViewProps & {
   ref?: Ref<MemoEditorHandle>;
@@ -88,6 +91,8 @@ export type MemoEditorProps = ViewProps & {
   onChangeHistory?: (event: NativeSyntheticEvent<MemoHistoryState>) => void;
   onFocusChange?: (event: NativeSyntheticEvent<{ focused: boolean }>) => void;
   onLeaveParagraph?: (event: NativeSyntheticEvent<MemoLeaveParagraphEvent>) => void;
+  /** 본문이 비어 있을 때 지우기를 눌렀을 때. 빈 목록 줄이면 먼저 목록 표시만 없애고 알리지 않는다. */
+  onBackspaceWhenEmpty?: () => void;
 };
 
 export { MemoEditor } from './MemoEditorView';

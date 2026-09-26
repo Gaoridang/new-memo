@@ -7,7 +7,7 @@ const IDLE_MS = 700;
 
 export type EditorIdle = ReturnType<typeof useEditorIdle>;
 
-/** 편집기를 저절로 고치는 기능들(할 일 바꾸기, 두들)이 타이핑이 멈춘 뒤에만 고치도록 기다린다. */
+/** 편집기를 저절로 고치는 기능(두들)이 타이핑이 멈춘 뒤에만 고치도록 기다린다. */
 export function useEditorIdle(editorRef: RefObject<MemoEditorHandle | null>) {
   const lastEditAt = useRef(0);
   const timers = useRef(new Set<ReturnType<typeof setTimeout>>());

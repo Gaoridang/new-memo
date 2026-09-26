@@ -91,7 +91,10 @@ class MemoEditorModule : Module() {
     Name("MemoEditor")
 
     View(MemoEditorView::class) {
-      Events("onChangeContent", "onChangeFormat", "onChangeHistory", "onFocusChange", "onLeaveParagraph")
+      Events(
+        "onChangeContent", "onChangeFormat", "onChangeHistory", "onFocusChange", "onLeaveParagraph",
+        "onBackspaceWhenEmpty"
+      )
 
       Prop("initialContent") { view: MemoEditorView, value: String? ->
         view.setInitialContent(value)
