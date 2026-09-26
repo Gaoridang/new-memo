@@ -5,6 +5,8 @@ struct MemoParagraphImage {
   /// 픽셀 경계에 맞춘 그림 영역. 끝 위치에서 실제 글자와 한 픽셀도 어긋나지 않는다.
   let frame: CGRect
   let image: CGImage
+  /// 글자 뒤에 깔려 글자와 함께 움직이는 그림(두들 칩). 빛은 글자에만 닿도록 글자 그림과 따로 둔다.
+  let backdrop: CGImage?
   /// 글자가 차지하는 영역. 빛이 이 구간을 지나간다.
   let textBounds: CGRect
   /// 첫 줄 위부터 마지막 줄 아래까지 (줄 간격 제외)
@@ -68,8 +70,15 @@ final class MemoBlockTransition {
     marker.frame = checkbox.frame.offsetBy(dx: -origin.x, dy: -origin.y)
     marker.contents = checkbox.image
     marker.contentsScale = scale
+    let backdrop = paragraph.backdrop.map { image -> CALayer in
+      let layer = CALayer()
+      layer.frame = overlay.bounds
+      layer.contents = image
+      layer.contentsScale = scale
+      return layer
+    }
     let now = overlay.layer.convertTime(CACurrentMediaTime(), from: nil)
-    let duration = appear(text: text, marker: marker, paragraph: paragraph, checkbox: checkbox,
+    let duration = appear(text: text, backdrop: backdrop, marker: marker, paragraph: paragraph, checkbox: checkbox,
                           indent: indent, fontSize: fontSize, accent: accentColor, scale: scale, now: now)
     CATransaction.commit()
 
@@ -93,6 +102,7 @@ final class MemoBlockTransition {
 
   private func appear(
     text: CALayer,
+    backdrop: CALayer?,
     marker: CALayer,
     paragraph: MemoParagraphImage,
     checkbox: MemoCheckboxImage,
@@ -124,6 +134,7 @@ final class MemoBlockTransition {
     glow.opacity = 0
     overlay.layer.addSublayer(glow)
     overlay.layer.addSublayer(marker)
+    if let backdrop { overlay.layer.addSublayer(backdrop) }
     overlay.layer.addSublayer(text)
 
     // 글자 위를 지나가는 빛. 글자 모양으로 가려 글자만 물든다.
@@ -150,8 +161,11 @@ final class MemoBlockTransition {
     host.addSublayer(band)
     text.addSublayer(host)
 
-    // 글자가 들여쓰기만큼 밀려난다.
+    // 글자가 들여쓰기만큼 밀려난다. 글자 뒤의 칩도 함께 밀린다.
     add(text, "transform.translation.x", from: -indent, to: 0, begin: now, duration: Timing.slide, curve: Curve.slide)
+    if let backdrop {
+      add(backdrop, "transform.translation.x", from: -indent, to: 0, begin: now, duration: Timing.slide, curve: Curve.slide)
+    }
 
     // 체크박스가 통통 튀듯 커지며 나타나고, 잠깐 강조색으로 빛나다 제 색으로 돌아온다.
     let markerBegin = now + Timing.markerDelay

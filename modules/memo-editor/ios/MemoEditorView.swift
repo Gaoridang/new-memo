@@ -1054,18 +1054,27 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
     let format = UIGraphicsImageRendererFormat()
     format.scale = scale
     format.opaque = false
-    let rendered = UIGraphicsImageRenderer(size: frame.size, format: format).image { context in
+    let renderer = UIGraphicsImageRenderer(size: frame.size, format: format)
+    let rendered = renderer.image { context in
       context.cgContext.translateBy(x: -frame.minX, y: -frame.minY)
-      // 두들 칩도 글자와 함께 움직이도록 글자 뒤에 그려 넣는다. (전환 중에는 마커 뷰가 이 문단의 칩을 그리지 않는다)
-      drawDoodleChips(in: frame) { NSIntersectionRange($0, paragraph).length > 0 }
       layoutManager.drawGlyphs(forGlyphRange: glyphs, at: origin)
     }
     guard let image = rendered.cgImage else { return nil }
+    // 두들 칩도 글자와 함께 움직이도록 따로 뜬다. (전환 중에는 마커 뷰가 이 문단의 칩을 그리지 않는다)
+    let inParagraph = { (word: NSRange) in NSIntersectionRange(word, paragraph).length > 0 }
+    let hasChips = !doodleArt.isEmpty && MemoDoodles.words(in: storage).contains { inParagraph($0.range) }
+    let backdrop = hasChips
+      ? renderer.image { context in
+          context.cgContext.translateBy(x: -frame.minX, y: -frame.minY)
+          drawDoodleChips(in: frame, include: inParagraph)
+        }.cgImage
+      : nil
     let contentGlyphs = layoutManager.glyphRange(forCharacterRange: content, actualCharacterRange: nil)
     let text = layoutManager.boundingRect(forGlyphRange: contentGlyphs, in: textContainer)
     return MemoParagraphImage(
       frame: frame,
       image: image,
+      backdrop: backdrop,
       textBounds: text.offsetBy(dx: origin.x, dy: origin.y),
       linesTop: origin.y + first.minY,
       linesBottom: origin.y + last.minY + theme.lineHeight)
