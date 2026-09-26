@@ -117,7 +117,7 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
   private static let historyLimit = 500
 
   let textView: MemoTextView
-  private let layoutManager: NSLayoutManager
+  private let layoutManager: MemoLayoutManager
   private let textContainer: NSTextContainer
 
   var theme = MemoTheme() {
@@ -148,6 +148,8 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
   private var lastFormat: (inline: InlineFlags, block: MemoBlock)?
   /// 커서가 있는 문단. 고친 문단에서 커서가 떠나면 JS에 알린다. (할 일 자동 감지)
   private var activeParagraph: (index: Int, text: String, edited: Bool)?
+  /// 진행 중인 문단 전환 애니메이션 (할 일로 바뀐 문단)
+  private var transitions: [MemoBlockTransition] = []
 
   /// 되돌리기 기록. 단계마다 문서 전체(저장 형식 JSON)를 남기고, historyIndex가 지금 문서다.
   /// 낱말 하나, 이어 지운 글자들, 줄 바꿈, 명령 하나가 각각 한 단계다.
@@ -169,7 +171,7 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
 
   required init(appContext: AppContext? = nil) {
     let textStorage = NSTextStorage()
-    let layoutManager = NSLayoutManager()
+    let layoutManager = MemoLayoutManager()
     textStorage.addLayoutManager(layoutManager)
     let textContainer = NSTextContainer(size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
     textContainer.widthTracksTextView = true
@@ -198,6 +200,10 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
   override func layoutSubviews() {
     super.layoutSubviews()
     if textView.frame != bounds {
+      // 폭이 바뀌면 줄 배치가 달라져 전환 애니메이션의 그림이 어긋난다.
+      if textView.frame.width != bounds.width {
+        finishTransitions()
+      }
       textView.frame = bounds
     }
   }
@@ -232,6 +238,7 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
   }
 
   private func applyTheme() {
+    finishTransitions()
     textView.tintColor = theme.accentColor
     textView.placeholderLabel.font = theme.font(bold: false)
     textView.placeholderLabel.textColor = theme.placeholderColor
@@ -248,6 +255,7 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
   }
 
   private func load(_ json: String) {
+    finishTransitions()
     let parsed = MemoDocument.deserialize(json, theme: theme)
     storage.setAttributedString(parsed?.text ?? NSAttributedString())
     trailingBlock = parsed?.trailingBlock ?? .paragraph
@@ -293,6 +301,7 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
 
     if selection.length > 0 {
       let turnOn = !selectionFlags(selection)[keyPath: flag]
+      finishTransitions { NSIntersectionRange($0.range, selection).length > 0 }
       storage.beginEditing()
       storage.enumerateAttributes(in: selection) { attributes, range, _ in
         var flags = InlineFlags(attributes)
@@ -317,6 +326,7 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
 
     let paragraphs = paragraphs(touching: textView.selectedRange)
     let allMatch = paragraphs.allSatisfy { blockOf($0).kind == block }
+    finishTransitions { transition in paragraphs.contains { $0 == transition.range } }
     storage.beginEditing()
     for paragraph in paragraphs {
       let current = blockOf(paragraph)
@@ -332,6 +342,7 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
 
   /// 문단마다 내용이 text이고 종류가 from일 때만 to로 바꾼다. 한 번에 바꾼 것은 되돌리기 한 번으로 돌아간다.
   /// 커서와 스크롤은 그대로 둔다. 바꾼 문단마다 true를 돌려준다.
+  /// 일반 문단이 체크박스가 되면 바뀌는 모습을 애니메이션으로 보여 준다.
   func setParagraphBlocks(_ changes: [ParagraphBlockChange]) -> [Bool] {
     // 되돌린 뒤(다시 하기가 남아 있으면) 자동으로 바꾸지 않는다. 바꾸면 다시 하기 기록이 사라진다.
     guard !canRedo else { return changes.map { _ in false } }
@@ -349,16 +360,24 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
     let applied = targets.map { $0 != nil }
     guard applied.contains(true) else { return applied }
 
+    // 바꾸기 전 종류를 알아야 어떤 문단을 애니메이션할지 고른다.
+    let converting = targets.compactMap { $0 }.map { (paragraph: $0.paragraph, previous: blockOf($0.paragraph), block: $0.block) }
+    finishTransitions { transition in
+      converting.contains { NSIntersectionRange($0.paragraph, transition.range).length > 0 }
+    }
     endKeyboardComposition()
     let selection = textView.selectedRange
     let offset = textView.contentOffset
     storage.beginEditing()
-    for case let target? in targets {
-      setBlock(target.block, for: target.paragraph)
+    for change in converting {
+      setBlock(change.block, for: change.paragraph)
     }
     storage.endEditing()
     textView.selectedRange = selection
     textView.contentOffset = offset
+    for change in converting {
+      startTransition(for: change.paragraph, from: change.previous, to: change.block)
+    }
     structureDidChange()
     return applied
   }
@@ -377,6 +396,8 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
   /// 서식만 바뀌었으면(할 일로 바꾼 것을 되돌릴 때) 커서와 스크롤을 그대로 둔다. 포커스는 건드리지 않는다.
   private func restoreHistory(at index: Int) {
     guard let parsed = MemoDocument.deserialize(history[index], theme: theme) else { return }
+    // 문서를 통째로 바꾸므로 진행 중인 전환 애니메이션은 끝난 모습으로 먼저 넘긴다.
+    finishTransitions()
     endKeyboardComposition()
     let before = string.copy() as! NSString
     let selection = textView.selectedRange
@@ -419,6 +440,7 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
 
   @objc private func handleCheckboxTap(_ gesture: UITapGestureRecognizer) {
     guard gesture.state == .ended, let paragraph = checkboxParagraph(at: gesture.location(in: textView)) else { return }
+    finishTransitions { $0.range == paragraph }
     storage.beginEditing()
     setBlock(blockOf(paragraph) == .checked ? .checkbox : .checked, for: paragraph)
     storage.endEditing()
@@ -429,6 +451,8 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
 
   func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
     let string = self.string
+    // 전환 중인 문단이나 그 앞을 고치면 글자 위치가 달라지므로 애니메이션을 바로 끝낸다.
+    finishTransitions { $0.isAffected(byEditAt: range.location) }
     pendingEdit = TextEdit(in: string, replacing: range, with: text)
 
     if text == "\n" && range.length == 0 {
@@ -479,6 +503,11 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
   }
 
   func textViewDidChange(_ textView: UITextView) {
+    // shouldChangeTextIn을 거치지 않고 전환 중인 문단을 고친 편집. 문단 위치를 알 수 없어 전체를 다시 그린다.
+    if let edited = editedRange, transitions.contains(where: { $0.isAffected(byEditAt: edited.location) }) {
+      finishTransitions { $0.isAffected(byEditAt: edited.location) }
+      layoutManager.invalidateDisplay(forCharacterRange: NSRange(location: 0, length: storage.length))
+    }
     let edit = committedEdit()
     if let stamp = pendingStamp {
       pendingStamp = nil
@@ -797,6 +826,107 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
     ])
   }
 
+  // MARK: - Block transitions
+
+  /// 이보다 긴 문단은 그림이 커지므로 애니메이션 없이 바꾼다.
+  private static let maxTransitionLines = 8
+
+  /// 코드로 바꾼 문단이 일반 문단에서 체크박스가 되었으면 바뀌는 모습을 보여 준다.
+  private func startTransition(for paragraph: NSRange, from previous: MemoBlock, to block: MemoBlock) {
+    guard previous == .paragraph, block.isCheckbox else { return }
+    guard window != nil, !UIAccessibility.isReduceMotionEnabled else { return }
+    let scale = textView.traitCollection.displayScale
+    guard scale > 0,
+          let image = paragraphImage(of: paragraph, scale: scale),
+          image.frame.intersects(textView.bounds),
+          let checkbox = checkboxImage(of: paragraph, block: block, lit: block == .checkbox, scale: scale)
+    else { return }
+
+    let endsWithNewline = string.character(at: NSMaxRange(paragraph) - 1) == 0x0A
+    let transition = MemoBlockTransition(range: paragraph, endsWithNewline: endsWithNewline)
+    transitions.append(transition)
+    layoutManager.hideCharacters(in: paragraph)
+    transition.start(
+      in: textView,
+      paragraph: image,
+      checkbox: checkbox,
+      indent: theme.listIndent,
+      fontSize: theme.fontSize,
+      accentColor: theme.accentColor
+    ) { [weak self] finished in
+      guard let self else { return }
+      self.transitions.removeAll { $0 === finished }
+      self.layoutManager.showCharacters(in: finished.range)
+      self.textView.markerView.setNeedsDisplay()
+    }
+  }
+
+  private func finishTransitions(where shouldFinish: (MemoBlockTransition) -> Bool = { _ in true }) {
+    for transition in transitions where shouldFinish(transition) {
+      transition.finish()
+    }
+  }
+
+  /// 문단의 글자를 지금 배치 그대로 그림으로 뜬다.
+  private func paragraphImage(of paragraph: NSRange, scale: CGFloat) -> MemoParagraphImage? {
+    let content = string.memoContentRange(of: paragraph)
+    guard content.length > 0 else { return nil }
+    layoutManager.ensureLayout(for: textContainer)
+    let glyphs = layoutManager.glyphRange(forCharacterRange: paragraph, actualCharacterRange: nil)
+    var lines: [CGRect] = []
+    layoutManager.enumerateLineFragments(forGlyphRange: glyphs) { rect, _, _, _, _ in
+      lines.append(rect)
+    }
+    guard let first = lines.first, let last = lines.last, lines.count <= Self.maxTransitionLines else { return nil }
+
+    let inset = textView.textContainerInset
+    let origin = CGPoint(x: inset.left, y: inset.top)
+    // 줄 높이를 넘는 글자(발음 기호, 이모지 등)도 잘리지 않게 위아래로 여유를 둔다.
+    let padding = ceil(theme.fontSize / 2)
+    let frame = CGRect(
+      x: 0,
+      y: origin.y + first.minY - padding,
+      width: textView.bounds.width,
+      height: last.minY + theme.lineHeight - first.minY + padding * 2
+    ).integral
+    let format = UIGraphicsImageRendererFormat()
+    format.scale = scale
+    format.opaque = false
+    let rendered = UIGraphicsImageRenderer(size: frame.size, format: format).image { context in
+      context.cgContext.translateBy(x: -frame.minX, y: -frame.minY)
+      layoutManager.drawGlyphs(forGlyphRange: glyphs, at: origin)
+    }
+    guard let image = rendered.cgImage else { return nil }
+    let contentGlyphs = layoutManager.glyphRange(forCharacterRange: content, actualCharacterRange: nil)
+    let text = layoutManager.boundingRect(forGlyphRange: contentGlyphs, in: textContainer)
+    return MemoParagraphImage(
+      frame: frame,
+      image: image,
+      textBounds: text.offsetBy(dx: origin.x, dy: origin.y),
+      linesTop: origin.y + first.minY,
+      linesBottom: origin.y + last.minY + theme.lineHeight)
+  }
+
+  /// 문단 첫 줄의 체크박스를 그림으로 뜬다. lit이면 강조색 윤곽도 함께 뜬다.
+  private func checkboxImage(of paragraph: NSRange, block: MemoBlock, lit: Bool, scale: CGFloat) -> MemoCheckboxImage? {
+    guard let line = firstLineRect(of: paragraph) else { return nil }
+    let inset = textView.textContainerInset
+    let top = inset.top + line.minY
+    let frame = checkboxRect(top: top, left: inset.left).insetBy(dx: -4, dy: -4).integral
+    let format = UIGraphicsImageRendererFormat()
+    format.scale = scale
+    format.opaque = false
+    let renderer = UIGraphicsImageRenderer(size: frame.size, format: format)
+    func render(outline: UIColor?) -> CGImage? {
+      renderer.image { context in
+        context.cgContext.translateBy(x: -frame.minX, y: -frame.minY)
+        drawMarker(block, number: 0, top: top, left: inset.left, outline: outline)
+      }.cgImage
+    }
+    guard let image = render(outline: nil) else { return nil }
+    return MemoCheckboxImage(frame: frame, image: image, litImage: lit ? render(outline: theme.accentColor) : nil)
+  }
+
   // MARK: - Markers
 
   private func firstLineRect(of paragraph: NSRange) -> CGRect? {
@@ -830,18 +960,26 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
       let block = blockOf(paragraph)
       number = block == .number ? number + 1 : 0
       guard block.isList, let line = firstLineRect(of: paragraph) else { continue }
+      // 나타나는 중인 체크박스는 전환 애니메이션이 그린다.
+      if transitions.contains(where: { $0.range == paragraph }) { continue }
       let top = inset.top + line.minY
       guard top <= dirtyRect.maxY && top + theme.lineHeight >= dirtyRect.minY else { continue }
       drawMarker(block, number: number, top: top, left: inset.left)
     }
   }
 
-  private func drawMarker(_ block: MemoBlock, number: Int, top: CGFloat, left: CGFloat) {
+  private func checkboxRect(top: CGFloat, left: CGFloat) -> CGRect {
+    let size = theme.markerSize
+    return CGRect(x: left + 1, y: top + theme.lineHeight / 2 - size / 2, width: size, height: size)
+  }
+
+  /// outline을 주면 체크하지 않은 체크박스의 윤곽을 그 색으로 그린다.
+  private func drawMarker(_ block: MemoBlock, number: Int, top: CGFloat, left: CGFloat, outline: UIColor? = nil) {
     let centerY = top + theme.lineHeight / 2
     switch block {
     case .checkbox, .checked:
       let size = theme.markerSize
-      let box = CGRect(x: left + 1, y: centerY - size / 2, width: size, height: size)
+      let box = checkboxRect(top: top, left: left)
       let radius = size * 0.28
       if block == .checked {
         theme.accentColor.setFill()
@@ -856,10 +994,10 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
         UIColor.white.setStroke()
         check.stroke()
       } else {
-        let outline = UIBezierPath(roundedRect: box.insetBy(dx: 0.75, dy: 0.75), cornerRadius: radius)
-        outline.lineWidth = 1.5
-        theme.mutedColor.setStroke()
-        outline.stroke()
+        let path = UIBezierPath(roundedRect: box.insetBy(dx: 0.75, dy: 0.75), cornerRadius: radius)
+        path.lineWidth = 1.5
+        (outline ?? theme.mutedColor).setStroke()
+        path.stroke()
       }
     case .bullet:
       let diameter: CGFloat = round(theme.fontSize / 3)

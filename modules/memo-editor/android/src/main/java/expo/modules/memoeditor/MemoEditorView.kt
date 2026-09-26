@@ -165,6 +165,9 @@ class MemoEditorView(context: Context, appContext: AppContext) :
   private data class ActiveParagraph(val index: Int, val text: String, val edited: Boolean)
   private var activeParagraph: ActiveParagraph? = null
 
+  /** 코드로 바꾸는 문단 하나와 바꾸기 전 종류 */
+  private data class BlockChange(val paragraph: Paragraph, val previous: MemoBlock, val block: MemoBlock)
+
   /**
    * 되돌리기 기록. 단계마다 문서 전체(저장 형식 JSON)를 남기고, historyIndex가 지금 문서다.
    * 낱말 하나, 이어 지운 글자들, 줄 바꿈, 명령 하나가 각각 한 단계다.
@@ -180,11 +183,16 @@ class MemoEditorView(context: Context, appContext: AppContext) :
   private val canRedo: Boolean
     get() = historyIndex < history.size - 1
 
+  /** 진행 중인 문단 전환 애니메이션 (할 일로 바뀐 문단) */
+  private val transitions = ArrayList<MemoBlockTransition>()
+
   private val inputMethodManager: InputMethodManager
     get() = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
 
   private val watcher = object : TextWatcher {
     override fun beforeTextChanged(s: CharSequence, start: Int, count: Int, after: Int) {
+      // 전환 중인 문단이나 그 앞을 고치면 글자 위치가 달라지므로 애니메이션을 바로 끝낸다.
+      finishTransitions { it.isAffectedByEdit(start) }
       if (applying) return
       val text = editText.text ?: return
       // 한글 조합처럼 글자를 바꿔 치우는 입력은 바뀌는 글자의 서식을, 새로 넣는 글자는 커서 자리의 서식을 따른다.
@@ -248,6 +256,8 @@ class MemoEditorView(context: Context, appContext: AppContext) :
   override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
     val width = right - left
     val height = bottom - top
+    // 폭이 바뀌면 줄이 다시 나뉘어 전환 애니메이션이 어긋난다.
+    if (width != editText.width) finishTransitions()
     editText.measure(
       MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
       MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY)
@@ -258,6 +268,11 @@ class MemoEditorView(context: Context, appContext: AppContext) :
   override fun onAttachedToWindow() {
     super.onAttachedToWindow()
     focusIfNeeded()
+  }
+
+  override fun onDetachedFromWindow() {
+    finishTransitions()
+    super.onDetachedFromWindow()
   }
 
   // region Props
@@ -289,6 +304,7 @@ class MemoEditorView(context: Context, appContext: AppContext) :
   }
 
   private fun applyTheme() {
+    finishTransitions()
     // 명세대로 크기를 고정하기 위해 sp가 아닌 dp로 지정한다.
     editText.setTextSize(TypedValue.COMPLEX_UNIT_DIP, theme.fontSize)
     editText.setTextColor(theme.textColor)
@@ -325,6 +341,7 @@ class MemoEditorView(context: Context, appContext: AppContext) :
   }
 
   private fun load(json: String?) {
+    finishTransitions()
     applying = true
     try {
       editText.setText(MemoDocument.deserialize(json, theme), TextView.BufferType.EDITABLE)
@@ -396,6 +413,7 @@ class MemoEditorView(context: Context, appContext: AppContext) :
 
     if (start != end) {
       val turnOn = !(MemoDocument.commonFlags(text, start, end)?.has(style) ?: false)
+      finishTransitions { it.overlaps(start, end) }
       MemoDocument.setInline(text, start, end, style, turnOn)
       emitContentIfChanged()
     } else {
@@ -420,6 +438,7 @@ class MemoEditorView(context: Context, appContext: AppContext) :
       MemoDocument.paragraphs(text).filter { !it.isEmpty && it.start < end && start < it.end }
     }
     val allMatch = paragraphs.all { MemoDocument.blockOf(text, it).kind == kind }
+    finishTransitions { transition -> paragraphs.any { transition.overlaps(it.start, it.end) } }
 
     applying = true
     try {
@@ -445,6 +464,7 @@ class MemoEditorView(context: Context, appContext: AppContext) :
   /**
    * 문단마다 내용이 text이고 종류가 from일 때만 to로 바꾼다. 한 번에 바꾼 것은 되돌리기 한 번으로 돌아간다.
    * 커서와 스크롤은 그대로 둔다. 바꾼 문단마다 true를 돌려준다.
+   * 일반 문단이 체크박스가 되면 바뀌는 모습을 애니메이션으로 보여 준다.
    */
   fun setParagraphBlocks(changes: List<ParagraphBlockChange>): List<Boolean> {
     // 되돌린 뒤(다시 하기가 남아 있으면) 자동으로 바꾸지 않는다. 바꾸면 다시 하기 기록이 사라진다.
@@ -461,15 +481,19 @@ class MemoEditorView(context: Context, appContext: AppContext) :
     if (true !in applied) return applied
 
     endComposition()
+    // 바꾸기 전 종류를 알아야 어떤 문단을 애니메이션할지 고른다.
+    val converting = targets.mapIndexedNotNull { index, paragraph ->
+      paragraph?.let { BlockChange(it, MemoDocument.blockOf(text, it), MemoBlock.fromRaw(changes[index].to)) }
+    }
+    finishTransitions { transition -> converting.any { transition.overlaps(it.paragraph.start, it.paragraph.end) } }
     applying = true
     try {
-      for ((index, paragraph) in targets.withIndex()) {
-        if (paragraph != null) MemoDocument.setBlock(text, paragraph, MemoBlock.fromRaw(changes[index].to), theme)
-      }
+      for (change in converting) MemoDocument.setBlock(text, change.paragraph, change.block, theme)
       MemoDocument.normalize(text, theme)
     } finally {
       applying = false
     }
+    for (change in converting) startTransition(text, change.paragraph, change.previous, change.block)
     editText.invalidate()
     emitContentIfChanged()
     emitFormat()
@@ -490,6 +514,8 @@ class MemoEditorView(context: Context, appContext: AppContext) :
    */
   private fun restoreHistory(index: Int) {
     val text = editText.text ?: return
+    // 문서를 통째로 바꾸므로 진행 중인 전환 애니메이션은 끝난 모습으로 먼저 넘긴다.
+    finishTransitions()
     endComposition()
     val before = text.toString()
     val selectionStart = editText.selectionStart
@@ -534,6 +560,20 @@ class MemoEditorView(context: Context, appContext: AppContext) :
       placeholderOnly && !block.isList -> text.delete(paragraph.start, paragraph.start + 1)
       else -> MemoDocument.setBlock(text, paragraph, block, theme)
     }
+  }
+
+  /** 코드로 바꾼 문단이 일반 문단에서 체크박스가 되었으면 바뀌는 모습을 보여 준다. */
+  private fun startTransition(text: Editable, paragraph: Paragraph, previous: MemoBlock, block: MemoBlock) {
+    val transition = MemoBlockTransition.create(editText, text, theme, paragraph, previous, block) { finished ->
+      transitions.remove(finished)
+    } ?: return
+    transitions.add(transition)
+    transition.start()
+  }
+
+  private fun finishTransitions(where: (MemoBlockTransition) -> Boolean = { true }) {
+    if (transitions.isEmpty()) return
+    transitions.filter(where).forEach { it.finish() }
   }
 
   // endregion
@@ -698,6 +738,7 @@ class MemoEditorView(context: Context, appContext: AppContext) :
     if (start != visibleStart || !MemoDocument.blockOf(text, paragraph).isList) return false
 
     // 목록 줄 맨 앞에서 지우면 윗줄과 합치지 않고 목록 표시만 없앤다.
+    finishTransitions { it.overlaps(paragraph.start, paragraph.end) }
     applying = true
     try {
       if (visibleStart > paragraph.start) {
@@ -731,6 +772,7 @@ class MemoEditorView(context: Context, appContext: AppContext) :
     val paragraph = MemoDocument.paragraphAt(text, paragraphStart)
     val block = MemoDocument.blockOf(text, paragraph)
     if (!block.isCheckbox) return
+    finishTransitions { it.overlaps(paragraph.start, paragraph.end) }
     MemoDocument.setBlock(
       text,
       paragraph,
