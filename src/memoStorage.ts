@@ -144,9 +144,67 @@ export function deleteMemo(id: string) {
   }
 }
 
-export type MemoBlock = { type: string; checked: boolean; text: string };
+// 편집 화면이 열어 둔 메모. 화면 밖에서 저장 파일을 고치면 그 화면의 자동 저장이 덮어쓰므로 건드리지 않는다.
+const heldMemos = new Map<string, number>();
 
-type DocumentBlock = { type?: unknown; checked?: unknown; runs?: { text?: unknown }[] };
+/** 편집 화면이 메모를 여는 동안 붙잡아 둔다. 돌려준 함수를 부르면 놓는다. */
+export function holdMemo(id: string) {
+  heldMemos.set(id, (heldMemos.get(id) ?? 0) + 1);
+  return () => {
+    const count = (heldMemos.get(id) ?? 1) - 1;
+    if (count > 0) heldMemos.set(id, count);
+    else heldMemos.delete(id);
+  };
+}
+
+/** index번째 문단의 내용이 text이고 종류가 from이면 to로 바꾼다. (에디터의 setParagraphBlocks와 같다) */
+export type SavedBlockChange = { index: number; text: string; from: string; to: string };
+
+/**
+ * 편집 화면이 닫힌 뒤에 끝난 자동 정리(할 일로 바꾸기, 마감일)를 저장된 메모에 반영한다.
+ * 문단 번호·글자·종류가 모두 맞는 문단만 바꾸고, 마감일은 본문에 있는 줄만 기억한다. 수정 시각은 그대로 둔다.
+ * 그 메모를 편집 화면이 다시 열어 두었으면 아무것도 하지 않는다.
+ */
+export function updateSavedMemo(id: string, changes: SavedBlockChange[], dues: Record<string, string>) {
+  if (heldMemos.has(id)) return;
+  try {
+    const memo = parseMemo(new File(memoDir(), `${id}.json`), id);
+    if (!memo?.content) return;
+    const document = JSON.parse(memo.content);
+    const blocks: DocumentBlock[] = document.blocks ?? [];
+    let changed = false;
+    for (const { index, text, from, to } of changes) {
+      const block = blocks[index];
+      if (!block || documentBlockText(block) !== text || documentBlockType(block) !== from) continue;
+      block.type = to;
+      if (to === 'checkbox') block.checked = false;
+      else delete block.checked;
+      changed = true;
+    }
+    const lines = new Set(blocks.map((block) => documentBlockText(block).trim()));
+    const nextDues = { ...memo.dues };
+    for (const [line, due] of Object.entries(dues)) {
+      if (!lines.has(line) || nextDues[line] === due) continue;
+      nextDues[line] = due;
+      changed = true;
+    }
+    if (!changed) return;
+    writeMemoFile({ ...memo, content: JSON.stringify(document), dues: nextDues });
+    notify();
+  } catch (error) {
+    console.warn('메모를 고치지 못했습니다.', error);
+  }
+}
+
+// doodle은 문단에 두들이 붙은 낱말이 있는지
+export type MemoBlock = { type: string; checked: boolean; text: string; doodle: boolean };
+
+type DocumentBlock = { type?: unknown; checked?: unknown; runs?: { text?: unknown; doodle?: unknown }[] };
+
+const documentBlockType = (block: DocumentBlock) => (typeof block.type === 'string' ? block.type : 'paragraph');
+
+const documentBlockText = (block: DocumentBlock) =>
+  (block.runs ?? []).map((run) => (typeof run.text === 'string' ? run.text : '')).join('');
 
 // 에디터 문서의 문단들. 서식은 빼고 글자와 문단 종류만 남긴다.
 export function memoBlocks(content: string): MemoBlock[] {
@@ -154,13 +212,25 @@ export function memoBlocks(content: string): MemoBlock[] {
   try {
     const blocks: DocumentBlock[] = JSON.parse(content).blocks ?? [];
     return blocks.map((block) => ({
-      type: typeof block.type === 'string' ? block.type : 'paragraph',
+      type: documentBlockType(block),
       checked: block.checked === true,
-      text: (block.runs ?? []).map((run) => (typeof run.text === 'string' ? run.text : '')).join(''),
+      text: documentBlockText(block),
+      doodle: (block.runs ?? []).some((run) => typeof run.doodle === 'string'),
     }));
   } catch {
     return [];
   }
+}
+
+/**
+ * index번째 문단 위아래의 줄들. Jev에 맥락으로 함께 보낸다. (체크박스 표시는 붙이지 않는다 — 붙이면 오히려 판단이 흐려졌다)
+ * 문서의 그 문단이 text와 다르면(순서가 어긋났으면) 엉뚱한 맥락 대신 빈 배열을 돌려준다.
+ */
+export function nearbyLines(blocks: MemoBlock[], index: number, text: string, before: number, after: number): string[] {
+  if (index >= blocks.length || blocks[index].text.trim() !== text.trim()) return [];
+  return [...blocks.slice(Math.max(0, index - before), index), ...blocks.slice(index + 1, index + 1 + after)]
+    .map((block) => block.text.trim())
+    .filter(Boolean);
 }
 
 // 에디터 문서에서 서식을 뺀 본문 텍스트 (문단은 줄바꿈으로 잇는다)

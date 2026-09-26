@@ -113,11 +113,12 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
   let onChangeHistory = EventDispatcher()
   let onFocusChange = EventDispatcher()
   let onLeaveParagraph = EventDispatcher()
+  let onBackspaceWhenEmpty = EventDispatcher()
 
   private static let historyLimit = 500
 
   let textView: MemoTextView
-  private let layoutManager: NSLayoutManager
+  private let layoutManager: MemoLayoutManager
   private let textContainer: NSTextContainer
 
   var theme = MemoTheme() {
@@ -133,6 +134,15 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
   var insetTop: CGFloat = 14 {
     didSet { updateInsets() }
   }
+  /// 두들 그림과 칩 색. 비어 있으면 두들을 숨긴다. (문서에 붙은 두들 표시는 그대로 둔다)
+  var doodleArt: [String: DoodleArt] = [:] {
+    didSet {
+      layoutDoodles()
+      refreshDecorations()
+    }
+  }
+  /// 두들 칩이 나타나고 사라지는 움직임
+  private let doodleAnimator = MemoDoodleAnimator()
 
   /// 글자가 하나도 없는 마지막 빈 줄의 문단 종류. 붙일 글자가 없어 따로 기억한다.
   private(set) var trailingBlock: MemoBlock = .paragraph
@@ -148,6 +158,8 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
   private var lastFormat: (inline: InlineFlags, block: MemoBlock)?
   /// 커서가 있는 문단. 고친 문단에서 커서가 떠나면 JS에 알린다. (할 일 자동 감지)
   private var activeParagraph: (index: Int, text: String, edited: Bool)?
+  /// 진행 중인 문단 전환 애니메이션 (할 일로 바뀐 문단)
+  private var transitions: [MemoBlockTransition] = []
 
   /// 되돌리기 기록. 단계마다 문서 전체(저장 형식 JSON)를 남기고, historyIndex가 지금 문서다.
   /// 낱말 하나, 이어 지운 글자들, 줄 바꿈, 명령 하나가 각각 한 단계다.
@@ -169,7 +181,7 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
 
   required init(appContext: AppContext? = nil) {
     let textStorage = NSTextStorage()
-    let layoutManager = NSLayoutManager()
+    let layoutManager = MemoLayoutManager()
     textStorage.addLayoutManager(layoutManager)
     let textContainer = NSTextContainer(size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
     textContainer.widthTracksTextView = true
@@ -191,6 +203,9 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
     textView.keyboardDismissMode = .interactive
     textView.contentInsetAdjustmentBehavior = .never
     textView.checkboxTap.addTarget(self, action: #selector(handleCheckboxTap(_:)))
+    doodleAnimator.onFrame = { [weak self] done in
+      self?.doodleFrame(done: done)
+    }
     updateInsets()
     addSubview(textView)
   }
@@ -198,12 +213,19 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
   override func layoutSubviews() {
     super.layoutSubviews()
     if textView.frame != bounds {
+      // 폭이 바뀌면 줄 배치가 달라져 전환 애니메이션의 그림이 어긋난다.
+      if textView.frame.width != bounds.width {
+        finishTransitions()
+      }
       textView.frame = bounds
     }
   }
 
   override func didMoveToWindow() {
     super.didMoveToWindow()
+    if window == nil {
+      finishDoodleAnimation()
+    }
     focusIfNeeded()
   }
 
@@ -232,6 +254,8 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
   }
 
   private func applyTheme() {
+    doodleAnimator.finish()
+    finishTransitions()
     textView.tintColor = theme.accentColor
     textView.placeholderLabel.font = theme.font(bold: false)
     textView.placeholderLabel.textColor = theme.placeholderColor
@@ -239,17 +263,23 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
       storage.beginEditing()
       storage.enumerateAttributes(in: NSRange(location: 0, length: storage.length)) { attributes, range, _ in
         let block = MemoBlock(paragraphStyle: attributes[.paragraphStyle])
-        storage.setAttributes(theme.attributes(block: block, inline: InlineFlags(attributes)), range: range)
+        var restyled = theme.attributes(block: block, inline: InlineFlags(attributes))
+        restyled[.memoDoodle] = attributes[.memoDoodle]
+        storage.setAttributes(restyled, range: range)
       }
       storage.endEditing()
     }
+    layoutDoodles()
     syncTypingAttributes()
     refreshDecorations()
   }
 
   private func load(_ json: String) {
+    finishTransitions()
     let parsed = MemoDocument.deserialize(json, theme: theme)
+    doodleAnimator.finish()
     storage.setAttributedString(parsed?.text ?? NSAttributedString())
+    layoutDoodles()
     trailingBlock = parsed?.trailingBlock ?? .paragraph
     editedRange = nil
     textView.selectedRange = NSRange(location: storage.length, length: 0)
@@ -287,12 +317,26 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
     textView.resignFirstResponder()
   }
 
+  /// 본문이 비어 있을 때 지우기. 빈 목록 줄이면 목록 표시만 없애고, 아니면 JS에 알린다. (제목 칸으로 올라간다)
+  /// 지울 글자가 없으면 UIKit이 편집 콜백을 부르지 않으므로 MemoTextView.deleteBackward에서 부른다. 처리했으면 true.
+  func deleteBackwardInEmptyDocument() -> Bool {
+    guard storage.length == 0 else { return false }
+    if trailingBlock != .paragraph {
+      trailingBlock = .paragraph
+      structureDidChange()
+    } else {
+      onBackspaceWhenEmpty()
+    }
+    return true
+  }
+
   func toggleInline(_ flag: WritableKeyPath<InlineFlags, Bool>) {
     endKeyboardComposition()
     let selection = textView.selectedRange
 
     if selection.length > 0 {
       let turnOn = !selectionFlags(selection)[keyPath: flag]
+      finishTransitions { NSIntersectionRange($0.range, selection).length > 0 }
       storage.beginEditing()
       storage.enumerateAttributes(in: selection) { attributes, range, _ in
         var flags = InlineFlags(attributes)
@@ -317,6 +361,7 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
 
     let paragraphs = paragraphs(touching: textView.selectedRange)
     let allMatch = paragraphs.allSatisfy { blockOf($0).kind == block }
+    finishTransitions { transition in paragraphs.contains { $0 == transition.range } }
     storage.beginEditing()
     for paragraph in paragraphs {
       let current = blockOf(paragraph)
@@ -332,6 +377,7 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
 
   /// 문단마다 내용이 text이고 종류가 from일 때만 to로 바꾼다. 한 번에 바꾼 것은 되돌리기 한 번으로 돌아간다.
   /// 커서와 스크롤은 그대로 둔다. 바꾼 문단마다 true를 돌려준다.
+  /// 일반 문단이 체크박스가 되면 바뀌는 모습을 애니메이션으로 보여 준다.
   func setParagraphBlocks(_ changes: [ParagraphBlockChange]) -> [Bool] {
     // 되돌린 뒤(다시 하기가 남아 있으면) 자동으로 바꾸지 않는다. 바꾸면 다시 하기 기록이 사라진다.
     guard !canRedo else { return changes.map { _ in false } }
@@ -349,18 +395,90 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
     let applied = targets.map { $0 != nil }
     guard applied.contains(true) else { return applied }
 
+    // 바꾸기 전 종류를 알아야 어떤 문단을 애니메이션할지 고른다.
+    let converting = targets.compactMap { $0 }.map { (paragraph: $0.paragraph, previous: blockOf($0.paragraph), block: $0.block) }
+    finishTransitions { transition in
+      converting.contains { NSIntersectionRange($0.paragraph, transition.range).length > 0 }
+    }
+    // 바뀌는 모습은 지금 배치를 그림으로 뜨므로, 움직이던 두들 칩은 끝 상태로 둔다.
+    finishDoodleAnimation()
     endKeyboardComposition()
     let selection = textView.selectedRange
     let offset = textView.contentOffset
     storage.beginEditing()
-    for case let target? in targets {
-      setBlock(target.block, for: target.paragraph)
+    for change in converting {
+      setBlock(change.block, for: change.paragraph)
     }
     storage.endEditing()
     textView.selectedRange = selection
     textView.contentOffset = offset
+    for change in converting {
+      startTransition(for: change.paragraph, from: change.previous, to: change.block)
+    }
     structureDidChange()
     return applied
+  }
+
+  /// 문단마다 내용이 text이고 그 자리의 낱말이 word일 때만 두들을 붙인다. 낱말은 두들과 함께 칩이 되며 차례로 나타난다.
+  /// 한 번에 붙인 것은 되돌리기 한 번으로 떨어진다. 이미 두들이 있는 문단은 건너뛴다.
+  /// 글자는 그대로라 커서와 한글 조합은 건드리지 않는다. 붙인 문단마다 true를 돌려준다.
+  /// explicit은 사용자가 버튼을 눌러 붙이는 것이다. 자동으로 붙일 때는 되돌린 뒤(다시 하기가 남아 있으면) 붙이지 않는다.
+  func setDoodles(_ changes: [DoodleChange], explicit: Bool) -> [Bool] {
+    guard explicit || !canRedo else { return changes.map { _ in false } }
+    let paragraphs = string.memoParagraphs()
+    var used = Set<Int>()
+    let targets: [NSRange?] = changes.map { change in
+      guard change.index >= 0, change.index < paragraphs.count, change.start >= 0, change.length > 0,
+            !used.contains(change.index) else { return nil }
+      let content = string.memoContentRange(of: paragraphs[change.index])
+      let word = NSRange(location: content.location + change.start, length: change.length)
+      guard NSMaxRange(word) <= NSMaxRange(content),
+            string.substring(with: content) == change.text,
+            string.substring(with: word) == change.word,
+            !MemoDoodles.hasMark(in: storage, range: content) else { return nil }
+      used.insert(change.index)
+      return word
+    }
+    let applied = targets.map { $0 != nil }
+    guard applied.contains(true) else { return applied }
+
+    // 할 일로 바뀌는 모습은 지금 배치를 그림으로 뜬 것이라, 칩 자리가 바뀌기 전에 끝낸다.
+    finishTransitions()
+    let offset = textView.contentOffset
+    var added: [MemoDoodleMark] = []
+    storage.beginEditing()
+    for (change, word) in zip(changes, targets) {
+      if let word {
+        let mark = MemoDoodleMark(id: change.id)
+        storage.addAttribute(.memoDoodle, value: mark, range: word)
+        added.append(mark)
+      }
+    }
+    storage.endEditing()
+    if canAnimateDoodles {
+      doodleAnimator.enter(added)
+    }
+    layoutDoodles()
+    textView.contentOffset = offset
+    structureDidChange()
+    return applied
+  }
+
+  /// 두들을 모두 뗀다. 칩은 차례로 사라지고, 되돌리기 한 번으로 다시 붙는다. 뗀 개수를 돌려준다.
+  func removeDoodles() -> Int {
+    let words = MemoDoodles.words(in: storage)
+    guard !words.isEmpty else { return 0 }
+    finishTransitions()
+    let offset = textView.contentOffset
+    doodleAnimator.finish()
+    storage.removeAttribute(.memoDoodle, range: NSRange(location: 0, length: storage.length))
+    if canAnimateDoodles {
+      doodleAnimator.exit(words.map { DoodleGhost(word: $0.range, id: $0.mark.id) })
+    }
+    layoutDoodles()
+    textView.contentOffset = offset
+    structureDidChange()
+    return words.count
   }
 
   func undo() {
@@ -377,8 +495,11 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
   /// 서식만 바뀌었으면(할 일로 바꾼 것을 되돌릴 때) 커서와 스크롤을 그대로 둔다. 포커스는 건드리지 않는다.
   private func restoreHistory(at index: Int) {
     guard let parsed = MemoDocument.deserialize(history[index], theme: theme) else { return }
+    // 문서를 통째로 바꾸므로 진행 중인 전환 애니메이션은 끝난 모습으로 먼저 넘긴다.
+    finishTransitions()
     endKeyboardComposition()
     let before = string.copy() as! NSString
+    let doodlesBefore = MemoDoodles.words(in: storage)
     let selection = textView.selectedRange
     let offset = textView.contentOffset
     historyIndex = index
@@ -390,7 +511,12 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
     pendingContinuation = nil
 
     textView.inputDelegate?.textWillChange(textView)
+    doodleAnimator.finish()
     storage.setAttributedString(parsed.text)
+    if before.isEqual(to: string as String) {
+      animateDoodles(from: doodlesBefore)
+    }
+    layoutDoodles()
     textView.inputDelegate?.textDidChange(textView)
     trailingBlock = parsed.trailingBlock
     editedRange = nil
@@ -419,6 +545,7 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
 
   @objc private func handleCheckboxTap(_ gesture: UITapGestureRecognizer) {
     guard gesture.state == .ended, let paragraph = checkboxParagraph(at: gesture.location(in: textView)) else { return }
+    finishTransitions { $0.range == paragraph }
     storage.beginEditing()
     setBlock(blockOf(paragraph) == .checked ? .checkbox : .checked, for: paragraph)
     storage.endEditing()
@@ -429,6 +556,8 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
 
   func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
     let string = self.string
+    // 전환 중인 문단이나 그 앞을 고치면 글자 위치가 달라지므로 애니메이션을 바로 끝낸다.
+    finishTransitions { $0.isAffected(byEditAt: range.location) }
     pendingEdit = TextEdit(in: string, replacing: range, with: text)
 
     if text == "\n" && range.length == 0 {
@@ -479,6 +608,11 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
   }
 
   func textViewDidChange(_ textView: UITextView) {
+    // shouldChangeTextIn을 거치지 않고 전환 중인 문단을 고친 편집. 문단 위치를 알 수 없어 전체를 다시 그린다.
+    if let edited = editedRange, transitions.contains(where: { $0.isAffected(byEditAt: edited.location) }) {
+      finishTransitions { $0.isAffected(byEditAt: edited.location) }
+      layoutManager.invalidateDisplay(forCharacterRange: NSRange(location: 0, length: storage.length))
+    }
     let edit = committedEdit()
     if let stamp = pendingStamp {
       pendingStamp = nil
@@ -493,6 +627,9 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
       setBlock(continuation, for: string.memoParagraph(at: textView.selectedRange.location))
     }
     normalizeEditedParagraphs()
+    // 움직이던 칩의 글자 위치가 바뀌었을 수 있어 끝 상태로 둔다.
+    doodleAnimator.finish()
+    layoutDoodles()
     syncTypingAttributes()
     refreshDecorations()
     emitContentIfChanged(edit)
@@ -602,7 +739,8 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
     activeParagraph = (index, contentText(of: string.memoParagraph(at: location)), wasEdited || edited)
   }
 
-  /// 고친 일반 문단에서 커서가 떠났으면 그 문단을 알린다. 줄 나누기·합치기로 내용이 바뀌었으면 알리지 않는다.
+  /// 고친 문단에서 커서가 떠났으면 그 문단과 종류(checkbox와 checked를 나눈다)를 알린다.
+  /// (일반 문단은 할 일인지, 체크하지 않은 체크박스는 마감일을, 모든 줄은 두들을 찾는다) 줄 나누기·합치기로 내용이 바뀌었으면 알리지 않는다.
   private func leaveActiveParagraph() {
     guard let active = activeParagraph else { return }
     activeParagraph = nil
@@ -611,10 +749,8 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
     guard active.index < paragraphs.count else { return }
     let paragraph = paragraphs[active.index]
     let text = contentText(of: paragraph)
-    guard text == active.text,
-          blockOf(paragraph) == .paragraph,
-          !text.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-    onLeaveParagraph(["index": active.index, "text": text])
+    guard text == active.text, !text.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+    onLeaveParagraph(["index": active.index, "text": text, "block": blockOf(paragraph).rawValue])
   }
 
   private func blockOf(_ paragraph: NSRange) -> MemoBlock {
@@ -719,6 +855,61 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
     textView.typingAttributes = theme.attributes(block: blockOf(paragraph), inline: inline)
   }
 
+  /// 두들 표시를 낱말 전체로 맞추고, 칩 자리(글자 간격)를 지금 움직임에 맞춰 둔다.
+  private func layoutDoodles() {
+    MemoDoodles.normalizeMarks(storage)
+    let animator = doodleAnimator
+    MemoDoodles.applyKern(
+      storage,
+      metrics: doodleArt.isEmpty ? nil : theme.doodleMetrics,
+      progress: { animator.progress(of: $0) },
+      ghosts: animator.ghosts)
+  }
+
+  /// 동작 줄이기를 켰거나, 화면에 없거나, 글자를 조합하는 중이면 칩을 움직이지 않고 바로 바꾼다.
+  private var canAnimateDoodles: Bool {
+    MemoDoodleAnimator.isEnabled && window != nil && !doodleArt.isEmpty && textView.markedTextRange == nil
+  }
+
+  /// 글자는 그대로이고 두들만 바뀐 기록으로 돌아왔으면, 새로 붙은 칩은 나타나고 떨어진 칩은 사라지게 한다.
+  private func animateDoodles(from before: [(range: NSRange, mark: MemoDoodleMark)]) {
+    guard canAnimateDoodles else { return }
+    let after = MemoDoodles.words(in: storage)
+    let key = { (word: (range: NSRange, mark: MemoDoodleMark)) in "\(word.range.location):\(word.range.length):\(word.mark.id)" }
+    let beforeKeys = Set(before.map(key))
+    let afterKeys = Set(after.map(key))
+    doodleAnimator.enter(after.filter { !beforeKeys.contains(key($0)) }.map(\.mark))
+    doodleAnimator.exit(before.filter { !afterKeys.contains(key($0)) }.map { DoodleGhost(word: $0.range, id: $0.mark.id) })
+  }
+
+  /// 움직이던 칩을 끝 상태로 둔다.
+  private func finishDoodleAnimation() {
+    guard doodleAnimator.isRunning else { return }
+    doodleAnimator.finish()
+    layoutDoodles()
+    refreshDecorations()
+  }
+
+  /// 칩이 움직이는 동안 프레임마다 부른다. 글자 간격만 바꾸고 보이는 곳만 다시 그리며, 끝나면 전체를 다시 그린다.
+  private func doodleFrame(done: Bool) {
+    let offset = textView.contentOffset
+    layoutDoodles()
+    if textView.contentOffset != offset {
+      textView.contentOffset = offset
+    }
+    if done {
+      refreshDecorations()
+      return
+    }
+    textView.markerView.setNeedsDisplay(textView.bounds)
+    textView.setNeedsLayout()
+    if #available(iOS 17.0, *), textView.isFirstResponder {
+      for case let interaction as UITextSelectionDisplayInteraction in textView.interactions {
+        interaction.setNeedsSelectionUpdate()
+      }
+    }
+  }
+
   private func structureDidChange() {
     syncTypingAttributes()
     refreshDecorations()
@@ -797,6 +988,118 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
     ])
   }
 
+  // MARK: - Block transitions
+
+  /// 이보다 긴 문단은 그림이 커지므로 애니메이션 없이 바꾼다.
+  private static let maxTransitionLines = 8
+
+  /// 코드로 바꾼 문단이 일반 문단에서 체크박스가 되었으면 바뀌는 모습을 보여 준다.
+  private func startTransition(for paragraph: NSRange, from previous: MemoBlock, to block: MemoBlock) {
+    guard previous == .paragraph, block.isCheckbox else { return }
+    guard window != nil, !UIAccessibility.isReduceMotionEnabled else { return }
+    let scale = textView.traitCollection.displayScale
+    guard scale > 0,
+          let image = paragraphImage(of: paragraph, scale: scale),
+          image.frame.intersects(textView.bounds),
+          let checkbox = checkboxImage(of: paragraph, block: block, lit: block == .checkbox, scale: scale)
+    else { return }
+
+    let endsWithNewline = string.character(at: NSMaxRange(paragraph) - 1) == 0x0A
+    let transition = MemoBlockTransition(range: paragraph, endsWithNewline: endsWithNewline)
+    transitions.append(transition)
+    layoutManager.hideCharacters(in: paragraph)
+    transition.start(
+      in: textView,
+      paragraph: image,
+      checkbox: checkbox,
+      indent: theme.listIndent,
+      fontSize: theme.fontSize,
+      accentColor: theme.accentColor
+    ) { [weak self] finished in
+      guard let self else { return }
+      self.transitions.removeAll { $0 === finished }
+      self.layoutManager.showCharacters(in: finished.range)
+      self.textView.markerView.setNeedsDisplay()
+    }
+  }
+
+  private func finishTransitions(where shouldFinish: (MemoBlockTransition) -> Bool = { _ in true }) {
+    for transition in transitions where shouldFinish(transition) {
+      transition.finish()
+    }
+  }
+
+  /// 문단의 글자를 지금 배치 그대로 그림으로 뜬다.
+  private func paragraphImage(of paragraph: NSRange, scale: CGFloat) -> MemoParagraphImage? {
+    let content = string.memoContentRange(of: paragraph)
+    guard content.length > 0 else { return nil }
+    layoutManager.ensureLayout(for: textContainer)
+    let glyphs = layoutManager.glyphRange(forCharacterRange: paragraph, actualCharacterRange: nil)
+    var lines: [CGRect] = []
+    layoutManager.enumerateLineFragments(forGlyphRange: glyphs) { rect, _, _, _, _ in
+      lines.append(rect)
+    }
+    guard let first = lines.first, let last = lines.last, lines.count <= Self.maxTransitionLines else { return nil }
+
+    let inset = textView.textContainerInset
+    let origin = CGPoint(x: inset.left, y: inset.top)
+    // 줄 높이를 넘는 글자(발음 기호, 이모지 등)도 잘리지 않게 위아래로 여유를 둔다.
+    let padding = ceil(theme.fontSize / 2)
+    let frame = CGRect(
+      x: 0,
+      y: origin.y + first.minY - padding,
+      width: textView.bounds.width,
+      height: last.minY + theme.lineHeight - first.minY + padding * 2
+    ).integral
+    let format = UIGraphicsImageRendererFormat()
+    format.scale = scale
+    format.opaque = false
+    let renderer = UIGraphicsImageRenderer(size: frame.size, format: format)
+    let rendered = renderer.image { context in
+      context.cgContext.translateBy(x: -frame.minX, y: -frame.minY)
+      layoutManager.drawGlyphs(forGlyphRange: glyphs, at: origin)
+    }
+    guard let image = rendered.cgImage else { return nil }
+    // 두들 칩도 글자와 함께 움직이도록 따로 뜬다. (전환 중에는 마커 뷰가 이 문단의 칩을 그리지 않는다)
+    let inParagraph = { (word: NSRange) in NSIntersectionRange(word, paragraph).length > 0 }
+    let hasChips = !doodleArt.isEmpty && MemoDoodles.words(in: storage).contains { inParagraph($0.range) }
+    let backdrop = hasChips
+      ? renderer.image { context in
+          context.cgContext.translateBy(x: -frame.minX, y: -frame.minY)
+          drawDoodleChips(in: frame, include: inParagraph)
+        }.cgImage
+      : nil
+    let contentGlyphs = layoutManager.glyphRange(forCharacterRange: content, actualCharacterRange: nil)
+    let text = layoutManager.boundingRect(forGlyphRange: contentGlyphs, in: textContainer)
+    return MemoParagraphImage(
+      frame: frame,
+      image: image,
+      backdrop: backdrop,
+      textBounds: text.offsetBy(dx: origin.x, dy: origin.y),
+      linesTop: origin.y + first.minY,
+      linesBottom: origin.y + last.minY + theme.lineHeight)
+  }
+
+  /// 문단 첫 줄의 체크박스를 그림으로 뜬다. lit이면 강조색 윤곽도 함께 뜬다.
+  private func checkboxImage(of paragraph: NSRange, block: MemoBlock, lit: Bool, scale: CGFloat) -> MemoCheckboxImage? {
+    guard let line = firstLineRect(of: paragraph) else { return nil }
+    let inset = textView.textContainerInset
+    let top = inset.top + line.minY
+    let frame = checkboxRect(top: top, left: inset.left).insetBy(dx: -4, dy: -4).integral
+    let format = UIGraphicsImageRendererFormat()
+    format.scale = scale
+    format.opaque = false
+    let renderer = UIGraphicsImageRenderer(size: frame.size, format: format)
+    func render(outline: UIColor?) -> CGImage? {
+      renderer.image { context in
+        context.cgContext.translateBy(x: -frame.minX, y: -frame.minY)
+        drawMarker(block, number: 0, top: top, left: inset.left, outline: outline)
+      }.cgImage
+    }
+    guard let image = render(outline: nil) else { return nil }
+    return MemoCheckboxImage(frame: frame, image: image, litImage: lit ? render(outline: theme.accentColor) : nil)
+  }
+
   // MARK: - Markers
 
   private func firstLineRect(of paragraph: NSRange) -> CGRect? {
@@ -830,18 +1133,51 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
       let block = blockOf(paragraph)
       number = block == .number ? number + 1 : 0
       guard block.isList, let line = firstLineRect(of: paragraph) else { continue }
+      // 나타나는 중인 체크박스는 전환 애니메이션이 그린다.
+      if transitions.contains(where: { $0.range == paragraph }) { continue }
       let top = inset.top + line.minY
       guard top <= dirtyRect.maxY && top + theme.lineHeight >= dirtyRect.minY else { continue }
       drawMarker(block, number: number, top: top, left: inset.left)
     }
+    // 바뀌는 중인 문단의 칩은 전환 애니메이션이 글자와 함께 그린다.
+    let moving = transitions.map(\.range)
+    drawDoodleChips(in: dirtyRect) { word in
+      !moving.contains { NSIntersectionRange($0, word).length > 0 }
+    }
   }
 
-  private func drawMarker(_ block: MemoBlock, number: Int, top: CGFloat, left: CGFloat) {
+  /// 두들 칩을 지금 그래픽 컨텍스트(본문 좌표)에 그린다. include가 true인 낱말만 그린다.
+  private func drawDoodleChips(in dirtyRect: CGRect, include: (NSRange) -> Bool) {
+    let animator = doodleAnimator
+    MemoDoodles.draw(
+      storage: storage,
+      layoutManager: layoutManager,
+      textContainer: textContainer,
+      inset: textView.textContainerInset,
+      lineHeight: theme.lineHeight,
+      metrics: theme.doodleMetrics,
+      art: doodleArt,
+      dirtyRect: dirtyRect,
+      progress: { animator.progress(of: $0) },
+      ghosts: animator.ghosts,
+      include: include
+    ) { location in
+      self.blockOf(self.string.memoParagraph(at: location)) == .checked
+    }
+  }
+
+  private func checkboxRect(top: CGFloat, left: CGFloat) -> CGRect {
+    let size = theme.markerSize
+    return CGRect(x: left + 1, y: top + theme.lineHeight / 2 - size / 2, width: size, height: size)
+  }
+
+  /// outline을 주면 체크하지 않은 체크박스의 윤곽을 그 색으로 그린다.
+  private func drawMarker(_ block: MemoBlock, number: Int, top: CGFloat, left: CGFloat, outline: UIColor? = nil) {
     let centerY = top + theme.lineHeight / 2
     switch block {
     case .checkbox, .checked:
       let size = theme.markerSize
-      let box = CGRect(x: left + 1, y: centerY - size / 2, width: size, height: size)
+      let box = checkboxRect(top: top, left: left)
       let radius = size * 0.28
       if block == .checked {
         theme.accentColor.setFill()
@@ -856,10 +1192,10 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
         UIColor.white.setStroke()
         check.stroke()
       } else {
-        let outline = UIBezierPath(roundedRect: box.insetBy(dx: 0.75, dy: 0.75), cornerRadius: radius)
-        outline.lineWidth = 1.5
-        theme.mutedColor.setStroke()
-        outline.stroke()
+        let path = UIBezierPath(roundedRect: box.insetBy(dx: 0.75, dy: 0.75), cornerRadius: radius)
+        path.lineWidth = 1.5
+        (outline ?? theme.mutedColor).setStroke()
+        path.stroke()
       }
     case .bullet:
       let diameter: CGFloat = round(theme.fontSize / 3)

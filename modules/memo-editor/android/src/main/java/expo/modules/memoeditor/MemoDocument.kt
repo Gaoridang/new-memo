@@ -15,6 +15,7 @@ import android.text.style.LeadingMarginSpan
 import android.text.style.StrikethroughSpan
 import android.text.style.StyleSpan
 import android.text.style.UnderlineSpan
+import android.text.style.UpdateLayout
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.roundToInt
@@ -102,6 +103,21 @@ class MemoTheme(private val density: Float) {
   val markerSizePx: Float get() = px(fontSize)
 }
 
+/** from에 to를 amount 비율만큼 섞은 색 */
+fun blendColors(from: Int, to: Int, amount: Float): Int {
+  val keep = 1f - amount
+  return Color.argb(
+    (Color.alpha(from) * keep + Color.alpha(to) * amount).roundToInt(),
+    (Color.red(from) * keep + Color.red(to) * amount).roundToInt(),
+    (Color.green(from) * keep + Color.green(to) * amount).roundToInt(),
+    (Color.blue(from) * keep + Color.blue(to) * amount).roundToInt()
+  )
+}
+
+/** 불투명도에 alpha를 곱한 색 */
+fun withAlpha(color: Int, alpha: Float): Int =
+  (color and 0x00FFFFFF) or ((Color.alpha(color) * alpha).roundToInt() shl 24)
+
 // 편집기가 만든 스팬만 골라 다루기 위해 전용 클래스를 쓴다. (IME, 맞춤법 스팬은 건드리지 않는다)
 class MemoBoldSpan : StyleSpan(Typeface.BOLD)
 class MemoUnderlineSpan : UnderlineSpan()
@@ -111,11 +127,17 @@ class MemoCheckedColorSpan(color: Int) : ForegroundColorSpan(color)
 /** 문단 하나를 덮는 스팬. 들여쓰기를 만들고 첫 줄 왼쪽에 체크박스, 글머리 기호, 번호를 그린다. */
 class MemoBlockSpan(val block: MemoBlock, private val theme: MemoTheme) : LeadingMarginSpan {
   var number = 1
+  /** 전환 애니메이션이 움직이는 들여쓰기와 체크박스. 없으면 제자리에 그린다. */
+  var motion: MarkerMotion? = null
   private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
   private val rect = RectF()
   private val path = Path()
 
-  override fun getLeadingMargin(first: Boolean): Int = if (block.isList) theme.listIndentPx else 0
+  override fun getLeadingMargin(first: Boolean): Int {
+    if (!block.isList) return 0
+    val motion = motion ?: return theme.listIndentPx
+    return (theme.listIndentPx * motion.indent).roundToInt()
+  }
 
   override fun drawLeadingMargin(
     canvas: Canvas,
@@ -159,10 +181,28 @@ class MemoBlockSpan(val block: MemoBlock, private val theme: MemoTheme) : Leadin
   }
 
   private fun drawCheckbox(canvas: Canvas, left: Float, centerY: Float) {
+    val motion = motion
+    // 전환 애니메이션 중이면 크기, 불투명도, 윤곽색이 바뀐다.
+    if (motion != null && motion.alpha <= 0f) return
     val size = theme.markerSizePx
     val boxLeft = left + theme.px(1f)
     rect.set(boxLeft, centerY - size / 2f, boxLeft + size, centerY + size / 2f)
     val radius = size * 0.28f
+    val saveCount = when {
+      motion == null -> -1
+      // 체크 표시까지 한꺼번에 흐려지도록 따로 그려 합친다.
+      motion.alpha < 1f -> canvas.saveLayerAlpha(
+        rect.left - size,
+        rect.top - size,
+        rect.right + size,
+        rect.bottom + size,
+        (motion.alpha * 255).roundToInt()
+      )
+      else -> canvas.save()
+    }
+    if (motion != null && motion.scale != 1f) {
+      canvas.scale(motion.scale, motion.scale, rect.centerX(), rect.centerY())
+    }
     if (block == MemoBlock.CHECKED) {
       paint.style = Paint.Style.FILL
       paint.color = theme.accentColor
@@ -182,11 +222,25 @@ class MemoBlockSpan(val block: MemoBlock, private val theme: MemoTheme) : Leadin
       rect.inset(inset, inset)
       paint.style = Paint.Style.STROKE
       paint.strokeWidth = theme.px(1.5f)
-      paint.color = theme.mutedColor
+      paint.color = blendColors(theme.mutedColor, theme.accentColor, motion?.lit ?: 0f)
       canvas.drawRoundRect(rect, radius, radius, paint)
     }
+    if (saveCount >= 0) canvas.restoreToCount(saveCount)
   }
 }
+
+/** 전환 애니메이션 중인 들여쓰기와 체크박스의 모습 */
+class MarkerMotion {
+  /** 목록 들여쓰기 중 지금 적용된 비율 */
+  var indent = 1f
+  var scale = 1f
+  var alpha = 1f
+  /** 체크하지 않은 체크박스 윤곽이 강조색으로 물든 정도 */
+  var lit = 0f
+}
+
+/** 줄 배치에 쓰이는 스팬. 잠깐 걸었다 떼면 그 구간의 줄을 다시 나눈다. */
+private object ReflowMarker : UpdateLayout
 
 /** 문단 범위. end는 끝 줄바꿈을 포함한다. 문서가 비었거나 줄바꿈으로 끝나면 길이 0인 빈 문단이 있다. */
 data class Paragraph(val start: Int, val end: Int) {
@@ -258,6 +312,11 @@ object MemoDocument {
     )
   }
 
+  /** index 글자가 속한 두들 낱말의 두들 이름 */
+  fun doodleAt(text: Spanned, index: Int): String? =
+    text.getSpans(index, index + 1, MemoDoodleSpan::class.java)
+      .firstOrNull { text.getSpanStart(it) <= index && text.getSpanEnd(it) > index }?.id
+
   /** 범위 안의 모든 글자(줄바꿈, 자리 표시 제외)에 걸린 서식 */
   fun commonFlags(text: Spanned, start: Int, end: Int): InlineFlags? {
     var result: InlineFlags? = null
@@ -318,6 +377,8 @@ object MemoDocument {
       if (block.isList) {
         text.setSpan(MemoBlockSpan(block, theme).also { it.number = number }, paragraph.start, paragraph.end, SPAN_FLAGS)
       }
+      // 들여쓰기 스팬을 붙이거나 떼는 것만으로는 줄이 다시 나뉘지 않는다.
+      if (existing.isNotEmpty() != block.isList) requestReflow(text, paragraph.start, paragraph.end)
     } else {
       keep.number = number
     }
@@ -333,6 +394,13 @@ object MemoDocument {
     }
   }
 
+  /** start..end 구간의 줄을 지금 스팬대로 다시 나눈다. */
+  fun requestReflow(text: Spannable, start: Int, end: Int) {
+    if (start >= end) return
+    text.setSpan(ReflowMarker, start, end, SPAN_FLAGS)
+    text.removeSpan(ReflowMarker)
+  }
+
   /** 모든 문단의 스팬이 문단 경계와 맞도록 정리하고 번호를 매긴다. */
   fun normalize(text: Spannable, theme: MemoTheme) {
     val paragraphs = paragraphs(text)
@@ -345,6 +413,7 @@ object MemoDocument {
     }
   }
 
+  /** 저장 형식은 iOS와 같다. runs의 doodle은 두들을 붙인 낱말의 글자에만 있고, 값은 두들 이름이다. */
   fun serialize(text: Spanned): String {
     val blocks = JSONArray()
     for (paragraph in paragraphs(text)) {
@@ -352,6 +421,7 @@ object MemoDocument {
       val runs = JSONArray()
       val piece = StringBuilder()
       var current: InlineFlags? = null
+      var currentDoodle: String? = null
       fun flush() {
         val flags = current ?: return
         if (piece.isEmpty()) return
@@ -360,6 +430,7 @@ object MemoDocument {
           if (flags.bold) put("bold", true)
           if (flags.underline) put("underline", true)
           if (flags.strikethrough) put("strikethrough", true)
+          currentDoodle?.let { put("doodle", it) }
         })
         piece.clear()
       }
@@ -367,8 +438,10 @@ object MemoDocument {
         val char = text[i]
         if (char == PLACEHOLDER) continue
         val flags = flagsAt(text, i)
-        if (flags != current) flush()
+        val doodle = doodleAt(text, i)
+        if (flags != current || doodle != currentDoodle) flush()
         current = flags
+        currentDoodle = doodle
         piece.append(char)
       }
       flush()
@@ -410,6 +483,9 @@ object MemoDocument {
           result.length,
           InlineFlags(run.optBoolean("bold"), run.optBoolean("underline"), run.optBoolean("strikethrough"))
         )
+        run.optString("doodle").takeIf { it.isNotEmpty() }?.let {
+          result.setSpan(MemoDoodleSpan(it), start, result.length, SPAN_FLAGS)
+        }
       }
 
       val isLast = index == blocks.length() - 1

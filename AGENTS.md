@@ -30,8 +30,10 @@ Run lint and typecheck before declaring any task done.
   - `src/app/memo/[id].tsx` — editor for one memo, keyed by `id`; picking a memo in the list, or the new-memo button (list header or memo header), does `router.replace` and closes the drawer. New memos open unfocused; the keyboard only comes up when the user taps a field.
   - `src/app/api/*+api.ts` — server routes (API routes, `web.output: "server"`) that ask Jev (TypeSafe AI). Shared call helper and date logic live in `src/server/` (imported only by API routes). Needs `TYPESAFE_API_KEY` in `.env.local` (server-only; never `EXPO_PUBLIC_`). Restart `expo start` after changing it.
     - `todo+api.ts` — is a line a to-do (auto-convert / suggest only) and its due date
+    - `due+api.ts` — due date of a line that is already a to-do (checkboxes the user made or edited, pasted to-dos)
     - `structure+api.ts` — list/step/to-do shape of each pasted line
     - `search+api.ts` — which memo line answers a question
+    - `doodle+api.ts` — which word in a line gets a doodle, and which one (catalog in `src/doodles/catalog.ts`; art and style sets in `src/doodles/art.ts`, `presets.ts`)
 - Import `router`, `Slot`, and `useLocalSearchParams` from `expo-router`. The app root is wrapped in `GestureHandlerRootView` (the drawer uses react-native-gesture-handler). Docs: https://docs.expo.dev/router/introduction.md
 
 ## Building with EAS

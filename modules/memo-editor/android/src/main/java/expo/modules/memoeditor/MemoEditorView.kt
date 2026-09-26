@@ -5,6 +5,7 @@ import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.text.Editable
 import android.text.InputType
+import android.text.Spanned
 import android.text.TextWatcher
 import android.util.TypedValue
 import android.view.Gravity
@@ -119,6 +120,7 @@ class MemoEditorView(context: Context, appContext: AppContext) :
   private val onChangeHistory by EventDispatcher()
   private val onFocusChange by EventDispatcher()
   private val onLeaveParagraph by EventDispatcher()
+  private val onBackspaceWhenEmpty by EventDispatcher()
 
   override val shouldUseAndroidLayout = true
 
@@ -141,6 +143,11 @@ class MemoEditorView(context: Context, appContext: AppContext) :
       field = value
       updatePadding()
     }
+
+  /** 두들 그림과 칩 색. null이면 두들을 숨긴다. (문서에 붙은 두들 표시는 그대로 둔다) */
+  private var doodleRenderer: DoodleRenderer? = null
+  /** 두들 칩이 나타나고 사라지는 움직임 */
+  private val doodleAnimator = MemoDoodleAnimator { done -> doodleFrame(done) }
 
   private var themeDirty = true
   private var pendingContent: String? = null
@@ -165,6 +172,9 @@ class MemoEditorView(context: Context, appContext: AppContext) :
   private data class ActiveParagraph(val index: Int, val text: String, val edited: Boolean)
   private var activeParagraph: ActiveParagraph? = null
 
+  /** 코드로 바꾸는 문단 하나와 바꾸기 전 종류 */
+  private data class BlockChange(val paragraph: Paragraph, val previous: MemoBlock, val block: MemoBlock)
+
   /**
    * 되돌리기 기록. 단계마다 문서 전체(저장 형식 JSON)를 남기고, historyIndex가 지금 문서다.
    * 낱말 하나, 이어 지운 글자들, 줄 바꿈, 명령 하나가 각각 한 단계다.
@@ -180,11 +190,16 @@ class MemoEditorView(context: Context, appContext: AppContext) :
   private val canRedo: Boolean
     get() = historyIndex < history.size - 1
 
+  /** 진행 중인 문단 전환 애니메이션 (할 일로 바뀐 문단) */
+  private val transitions = ArrayList<MemoBlockTransition>()
+
   private val inputMethodManager: InputMethodManager
     get() = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
 
   private val watcher = object : TextWatcher {
     override fun beforeTextChanged(s: CharSequence, start: Int, count: Int, after: Int) {
+      // 전환 중인 문단이나 그 앞을 고치면 글자 위치가 달라지므로 애니메이션을 바로 끝낸다.
+      finishTransitions { it.isAffectedByEdit(start) }
       if (applying) return
       val text = editText.text ?: return
       // 한글 조합처럼 글자를 바꿔 치우는 입력은 바뀌는 글자의 서식을, 새로 넣는 글자는 커서 자리의 서식을 따른다.
@@ -236,8 +251,12 @@ class MemoEditorView(context: Context, appContext: AppContext) :
       editText.importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
     }
     editText.listener = this
+    editText.underlay = { canvas, layout ->
+      editText.text?.let { MemoDoodles.drawChips(canvas, layout, it, doodleRenderer, theme.textSizePx) }
+    }
     editText.addTextChangedListener(watcher)
     editText.setOnFocusChangeListener { _, focused ->
+      if (!focused) layoutDoodles()
       if (focused) trackActiveParagraph(edited = false) else leaveActiveParagraph()
       onFocusChange(mapOf("focused" to focused))
     }
@@ -248,6 +267,8 @@ class MemoEditorView(context: Context, appContext: AppContext) :
   override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
     val width = right - left
     val height = bottom - top
+    // 폭이 바뀌면 줄이 다시 나뉘어 전환 애니메이션이 어긋난다.
+    if (width != editText.width) finishTransitions()
     editText.measure(
       MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
       MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY)
@@ -260,6 +281,12 @@ class MemoEditorView(context: Context, appContext: AppContext) :
     focusIfNeeded()
   }
 
+  override fun onDetachedFromWindow() {
+    finishDoodleAnimation()
+    finishTransitions()
+    super.onDetachedFromWindow()
+  }
+
   // region Props
 
   fun setInitialContent(json: String?) {
@@ -268,6 +295,13 @@ class MemoEditorView(context: Context, appContext: AppContext) :
 
   fun markThemeDirty() {
     themeDirty = true
+  }
+
+  fun setDoodleArt(records: List<DoodleArtRecord>) {
+    doodleRenderer = if (records.isEmpty()) null else MemoDoodles.parseArt(records, theme)
+    doodleAnimator.finish()
+    layoutDoodles(force = true)
+    editText.invalidate()
   }
 
   fun didUpdateProps() {
@@ -289,6 +323,7 @@ class MemoEditorView(context: Context, appContext: AppContext) :
   }
 
   private fun applyTheme() {
+    finishTransitions()
     // 명세대로 크기를 고정하기 위해 sp가 아닌 dp로 지정한다.
     editText.setTextSize(TypedValue.COMPLEX_UNIT_DIP, theme.fontSize)
     editText.setTextColor(theme.textColor)
@@ -321,14 +356,19 @@ class MemoEditorView(context: Context, appContext: AppContext) :
         editText.setTextSelectHandleRight(it)
       }
     }
+    doodleAnimator.finish()
+    layoutDoodles(force = true)
     editText.invalidate()
   }
 
   private fun load(json: String?) {
+    doodleAnimator.finish()
+    finishTransitions()
     applying = true
     try {
       editText.setText(MemoDocument.deserialize(json, theme), TextView.BufferType.EDITABLE)
       editText.setSelection(editText.text?.length ?: 0)
+      layoutDoodles()
     } finally {
       applying = false
     }
@@ -396,6 +436,7 @@ class MemoEditorView(context: Context, appContext: AppContext) :
 
     if (start != end) {
       val turnOn = !(MemoDocument.commonFlags(text, start, end)?.has(style) ?: false)
+      finishTransitions { it.overlaps(start, end) }
       MemoDocument.setInline(text, start, end, style, turnOn)
       emitContentIfChanged()
     } else {
@@ -420,6 +461,7 @@ class MemoEditorView(context: Context, appContext: AppContext) :
       MemoDocument.paragraphs(text).filter { !it.isEmpty && it.start < end && start < it.end }
     }
     val allMatch = paragraphs.all { MemoDocument.blockOf(text, it).kind == kind }
+    finishTransitions { transition -> paragraphs.any { transition.overlaps(it.start, it.end) } }
 
     applying = true
     try {
@@ -445,6 +487,7 @@ class MemoEditorView(context: Context, appContext: AppContext) :
   /**
    * 문단마다 내용이 text이고 종류가 from일 때만 to로 바꾼다. 한 번에 바꾼 것은 되돌리기 한 번으로 돌아간다.
    * 커서와 스크롤은 그대로 둔다. 바꾼 문단마다 true를 돌려준다.
+   * 일반 문단이 체크박스가 되면 바뀌는 모습을 애니메이션으로 보여 준다.
    */
   fun setParagraphBlocks(changes: List<ParagraphBlockChange>): List<Boolean> {
     // 되돌린 뒤(다시 하기가 남아 있으면) 자동으로 바꾸지 않는다. 바꾸면 다시 하기 기록이 사라진다.
@@ -461,12 +504,67 @@ class MemoEditorView(context: Context, appContext: AppContext) :
     if (true !in applied) return applied
 
     endComposition()
+    // 바꾸기 전 종류를 알아야 어떤 문단을 애니메이션할지 고른다.
+    val converting = targets.mapIndexedNotNull { index, paragraph ->
+      paragraph?.let { BlockChange(it, MemoDocument.blockOf(text, it), MemoBlock.fromRaw(changes[index].to)) }
+    }
+    finishTransitions { transition -> converting.any { transition.overlaps(it.paragraph.start, it.paragraph.end) } }
+    // 바뀌는 모습은 줄을 먼저 나눠 두고 그리므로, 움직이던 두들 칩은 끝 상태로 둔다.
+    finishDoodleAnimation()
     applying = true
     try {
-      for ((index, paragraph) in targets.withIndex()) {
-        if (paragraph != null) MemoDocument.setBlock(text, paragraph, MemoBlock.fromRaw(changes[index].to), theme)
-      }
+      for (change in converting) MemoDocument.setBlock(text, change.paragraph, change.block, theme)
       MemoDocument.normalize(text, theme)
+    } finally {
+      applying = false
+    }
+    for (change in converting) startTransition(text, change.paragraph, change.previous, change.block)
+    editText.invalidate()
+    emitContentIfChanged()
+    emitFormat()
+    return applied
+  }
+
+  /**
+   * 문단마다 내용이 text이고 그 자리의 낱말이 word일 때만 두들을 붙인다. 낱말은 두들과 함께 칩이 되며 차례로 나타난다.
+   * 한 번에 붙인 것은 되돌리기 한 번으로 떨어진다. 이미 두들이 있는 문단은 건너뛴다.
+   * 글자는 그대로라 커서와 한글 조합은 건드리지 않는다. 붙인 문단마다 true를 돌려준다.
+   * explicit은 사용자가 버튼을 눌러 붙이는 것이다. 자동으로 붙일 때는 되돌린 뒤(다시 하기가 남아 있으면) 붙이지 않는다.
+   */
+  fun setDoodles(changes: List<DoodleChange>, explicit: Boolean): List<Boolean> {
+    if (!explicit && canRedo) return changes.map { false }
+    val text = editText.text ?: return changes.map { false }
+    val paragraphs = MemoDocument.paragraphs(text)
+    val used = HashSet<Int>()
+    val targets = changes.map { change ->
+      if (!used.add(change.index)) return@map null
+      val paragraph = paragraphs.getOrNull(change.index) ?: return@map null
+      // 내용은 자리 표시 문자를 뺀 글자라, 낱말 위치도 눈에 보이는 문단 시작부터 센다.
+      val start = MemoDocument.visibleStart(text, paragraph) + change.start
+      val end = start + change.length
+      val valid = !paragraph.isEmpty && change.start >= 0 && change.length > 0 &&
+        end <= MemoDocument.contentEnd(text, paragraph) &&
+        contentText(text, paragraph) == change.text &&
+        text.subSequence(start, end).toString() == change.word &&
+        !MemoDoodles.hasMark(text, paragraph.start, paragraph.end)
+      if (valid) start until end else null
+    }
+    val applied = targets.map { it != null }
+    if (true !in applied) return applied
+
+    // 할 일로 바뀌는 모습은 줄을 먼저 나눠 둔 것이라, 칩 자리가 바뀌기 전에 끝낸다.
+    finishTransitions()
+    applying = true
+    try {
+      val added = ArrayList<MemoDoodleSpan>()
+      for ((index, word) in targets.withIndex()) {
+        if (word == null) continue
+        val mark = MemoDoodleSpan(changes[index].id)
+        text.setSpan(mark, word.first, word.last + 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        added.add(mark)
+      }
+      if (canAnimateDoodles()) doodleAnimator.enter(added)
+      layoutDoodles()
     } finally {
       applying = false
     }
@@ -474,6 +572,34 @@ class MemoEditorView(context: Context, appContext: AppContext) :
     emitContentIfChanged()
     emitFormat()
     return applied
+  }
+
+  /** 두들을 모두 뗀다. 칩은 차례로 사라지고, 되돌리기 한 번으로 다시 붙는다. 뗀 개수를 돌려준다. */
+  fun removeDoodles(): Int {
+    val text = editText.text ?: return 0
+    val words = MemoDoodles.words(text)
+    if (words.isEmpty()) return 0
+    finishTransitions()
+    doodleAnimator.finish()
+    applying = true
+    try {
+      layoutDoodles()
+      text.getSpans(0, text.length, MemoDoodleSpan::class.java).forEach { text.removeSpan(it) }
+      if (canAnimateDoodles()) {
+        // 칩 자리는 사라지는 동안 남겨 둔다.
+        val gaps = text.getSpans(0, text.length, MemoDoodleGapSpan::class.java)
+          .sortedBy { text.getSpanStart(it) }
+        gaps.forEach { it.exiting = true }
+        doodleAnimator.exit(gaps.map { it.mark })
+      }
+      layoutDoodles()
+    } finally {
+      applying = false
+    }
+    editText.invalidate()
+    emitContentIfChanged()
+    emitFormat()
+    return words.size
   }
 
   override fun undo() {
@@ -490,8 +616,12 @@ class MemoEditorView(context: Context, appContext: AppContext) :
    */
   private fun restoreHistory(index: Int) {
     val text = editText.text ?: return
+    // 문서를 통째로 바꾸므로 진행 중인 전환 애니메이션은 끝난 모습으로 먼저 넘긴다.
+    finishTransitions()
     endComposition()
+    doodleAnimator.finish()
     val before = text.toString()
+    val doodlesBefore = MemoDoodles.words(text).map { (word, mark) -> word to mark.id }
     val selectionStart = editText.selectionStart
     val selectionEnd = editText.selectionEnd
     historyIndex = index
@@ -502,6 +632,8 @@ class MemoEditorView(context: Context, appContext: AppContext) :
     applying = true
     try {
       text.replace(0, text.length, MemoDocument.deserialize(history[index], theme))
+      if (text.toString() == before) animateDoodles(text, doodlesBefore)
+      layoutDoodles()
     } finally {
       applying = false
     }
@@ -536,6 +668,20 @@ class MemoEditorView(context: Context, appContext: AppContext) :
     }
   }
 
+  /** 코드로 바꾼 문단이 일반 문단에서 체크박스가 되었으면 바뀌는 모습을 보여 준다. */
+  private fun startTransition(text: Editable, paragraph: Paragraph, previous: MemoBlock, block: MemoBlock) {
+    val transition = MemoBlockTransition.create(editText, text, theme, paragraph, previous, block) { finished ->
+      transitions.remove(finished)
+    } ?: return
+    transitions.add(transition)
+    transition.start()
+  }
+
+  private fun finishTransitions(where: (MemoBlockTransition) -> Boolean = { true }) {
+    if (transitions.isEmpty()) return
+    transitions.filter(where).forEach { it.finish() }
+  }
+
   // endregion
 
   // region Text changes
@@ -555,6 +701,9 @@ class MemoEditorView(context: Context, appContext: AppContext) :
       handleNewline(text, start)
     }
     removeStrayPlaceholders(text)
+    // 움직이던 칩의 글자 위치가 바뀌었을 수 있어 끝 상태로 둔다.
+    doodleAnimator.finish()
+    layoutDoodles()
     editText.invalidate()
   }
 
@@ -601,6 +750,56 @@ class MemoEditorView(context: Context, appContext: AppContext) :
     }
   }
 
+  /** 두들 표시를 낱말 전체로 맞추고, 칩 자리 스팬을 지금 움직임에 맞춰 둔다. */
+  private fun layoutDoodles(force: Boolean = false) {
+    val text = editText.text ?: return
+    MemoDoodles.layout(text, doodleRenderer, force)
+    MemoDoodles.remeasure(text)
+  }
+
+  /** 애니메이션을 껐거나, 화면에 없거나, 글자를 조합하는 중이면 칩을 움직이지 않고 바로 바꾼다. */
+  private fun canAnimateDoodles(): Boolean {
+    val text = editText.text ?: return false
+    return MemoDoodleAnimator.isEnabled && isAttachedToWindow && doodleRenderer?.isEmpty == false &&
+      BaseInputConnection.getComposingSpanStart(text) == -1
+  }
+
+  /** 글자는 그대로이고 두들만 바뀐 기록으로 돌아왔으면, 새로 붙은 칩은 나타나고 떨어진 칩은 사라지게 한다. */
+  private fun animateDoodles(text: Editable, before: List<Pair<IntRange, String>>) {
+    if (!canAnimateDoodles()) return
+    val after = MemoDoodles.words(text)
+    val beforeKeys = before.toSet()
+    val afterKeys = after.map { (word, mark) -> word to mark.id }.toSet()
+    doodleAnimator.enter(after.filter { (word, mark) -> (word to mark.id) !in beforeKeys }.map { it.second })
+    doodleAnimator.exit(MemoDoodles.addGhosts(text, doodleRenderer, before.filter { it !in afterKeys }))
+  }
+
+  /** 움직이던 칩을 끝 상태로 둔다. */
+  private fun finishDoodleAnimation() {
+    if (!doodleAnimator.isRunning) return
+    doodleAnimator.finish()
+    applying = true
+    try {
+      layoutDoodles()
+    } finally {
+      applying = false
+    }
+    editText.invalidate()
+  }
+
+  /** 칩이 움직이는 동안 프레임마다 부른다. 폭이 바뀐 스팬만 다시 재고, 끝나면 사라진 자리를 뗀다. */
+  private fun doodleFrame(done: Boolean) {
+    val text = editText.text ?: return
+    applying = true
+    try {
+      MemoDoodles.remeasure(text)
+      if (done) layoutDoodles()
+    } finally {
+      applying = false
+    }
+    editText.invalidate()
+  }
+
   /** 서식을 바꾸기 전에 조합 중인 글자를 확정해, 다음 자모가 앞 글자에 붙지 않게 한다. */
   private fun endComposition() {
     val text = editText.text ?: return
@@ -642,7 +841,10 @@ class MemoEditorView(context: Context, appContext: AppContext) :
     activeParagraph = ActiveParagraph(index, contentText(text, MemoDocument.paragraphAt(text, offset)), wasEdited || edited)
   }
 
-  /** 고친 일반 문단에서 커서가 떠났으면 그 문단을 알린다. 줄 나누기·합치기로 내용이 바뀌었으면 알리지 않는다. */
+  /**
+   * 고친 문단에서 커서가 떠났으면 그 문단과 종류(checkbox와 checked를 나눈다)를 알린다.
+   * (일반 문단은 할 일인지, 체크하지 않은 체크박스는 마감일을, 모든 줄은 두들을 찾는다) 줄 나누기·합치기로 내용이 바뀌었으면 알리지 않는다.
+   */
   private fun leaveActiveParagraph() {
     val active = activeParagraph ?: return
     activeParagraph = null
@@ -653,8 +855,7 @@ class MemoEditorView(context: Context, appContext: AppContext) :
     val paragraph = paragraphs[active.index]
     val content = contentText(text, paragraph)
     if (content != active.text || content.isBlank()) return
-    if (MemoDocument.blockOf(text, paragraph) != MemoBlock.PARAGRAPH) return
-    onLeaveParagraph(mapOf("index" to active.index, "text" to content))
+    onLeaveParagraph(mapOf("index" to active.index, "text" to content, "block" to MemoDocument.blockOf(text, paragraph).raw))
   }
 
   private fun insertionFlags(position: Int): InlineFlags {
@@ -684,6 +885,7 @@ class MemoEditorView(context: Context, appContext: AppContext) :
       editText.setSelection(start + 1)
       return
     }
+    layoutDoodles()
     emitFormat()
     if (editText.isFocused) trackActiveParagraph(edited = false)
   }
@@ -693,11 +895,17 @@ class MemoEditorView(context: Context, appContext: AppContext) :
     val start = editText.selectionStart
     if (start < 0 || start != editText.selectionEnd) return false
     if (BaseInputConnection.getComposingSpanStart(text) != -1) return false
+    // 본문이 비었으면 JS에 알린다. (제목 칸으로 올라간다) 빈 목록 줄은 자리 표시 문자가 있어 아래에서 목록 표시만 없앤다.
+    if (text.isEmpty()) {
+      onBackspaceWhenEmpty(emptyMap())
+      return true
+    }
     val paragraph = MemoDocument.paragraphAt(text, start)
     val visibleStart = MemoDocument.visibleStart(text, paragraph)
     if (start != visibleStart || !MemoDocument.blockOf(text, paragraph).isList) return false
 
     // 목록 줄 맨 앞에서 지우면 윗줄과 합치지 않고 목록 표시만 없앤다.
+    finishTransitions { it.overlaps(paragraph.start, paragraph.end) }
     applying = true
     try {
       if (visibleStart > paragraph.start) {
@@ -731,6 +939,7 @@ class MemoEditorView(context: Context, appContext: AppContext) :
     val paragraph = MemoDocument.paragraphAt(text, paragraphStart)
     val block = MemoDocument.blockOf(text, paragraph)
     if (!block.isCheckbox) return
+    finishTransitions { it.overlaps(paragraph.start, paragraph.end) }
     MemoDocument.setBlock(
       text,
       paragraph,

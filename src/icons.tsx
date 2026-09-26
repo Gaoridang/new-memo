@@ -158,6 +158,22 @@ export function AutoTodoIcon({ color, size }: IconProps) {
   );
 }
 
+// 귀퉁이가 들린 웃는 스티커: 두들
+export function DoodleIcon({ color, size }: IconProps) {
+  return (
+    <Icon size={size}>
+      <Path
+        d="M3.75 6.25C3.75 4.87 4.87 3.75 6.25 3.75H13.75C15.13 3.75 16.25 4.87 16.25 6.25V11.75L11.75 16.25H6.25C4.87 16.25 3.75 15.13 3.75 13.75Z"
+        {...strokeProps(color)}
+      />
+      <Path d="M16.25 11.75H13.25C12.42 11.75 11.75 12.42 11.75 13.25V16.25" {...strokeProps(color)} />
+      <Circle cx={7.6} cy={8.2} r={0.95} fill={color} />
+      <Circle cx={11.4} cy={8.2} r={0.95} fill={color} />
+      <Path d="M7.7 10.7Q9.5 12.2 11.3 10.7" {...strokeProps(color)} />
+    </Icon>
+  );
+}
+
 // 돋보기 + 반짝임: 메모에게 묻기 (뜻으로 찾기)
 export function AskIcon({ color, size }: IconProps) {
   return (
