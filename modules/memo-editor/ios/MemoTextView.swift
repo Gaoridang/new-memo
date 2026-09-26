@@ -1,5 +1,56 @@
 import UIKit
 
+/// 문단 전환 애니메이션이 대신 그리는 동안 그 문단의 글자를 그리지 않는 레이아웃 매니저
+final class MemoLayoutManager: NSLayoutManager {
+  private var hiddenRanges: [NSRange] = []
+
+  func hideCharacters(in range: NSRange) {
+    hiddenRanges.append(range)
+    redisplay(range)
+  }
+
+  func showCharacters(in range: NSRange) {
+    guard let index = hiddenRanges.firstIndex(of: range) else { return }
+    hiddenRanges.remove(at: index)
+    redisplay(range)
+  }
+
+  /// 편집으로 글자 수가 줄었을 수 있으니 문서 안쪽만 다시 그린다.
+  private func existing(_ range: NSRange) -> NSRange? {
+    let clamped = NSIntersectionRange(range, NSRange(location: 0, length: textStorage?.length ?? 0))
+    return clamped.length > 0 ? clamped : nil
+  }
+
+  private func redisplay(_ range: NSRange) {
+    if let range = existing(range) {
+      invalidateDisplay(forCharacterRange: range)
+    }
+  }
+
+  override func drawGlyphs(forGlyphRange glyphsToShow: NSRange, at origin: CGPoint) {
+    guard !hiddenRanges.isEmpty else {
+      super.drawGlyphs(forGlyphRange: glyphsToShow, at: origin)
+      return
+    }
+    let hidden = hiddenRanges
+      .compactMap(existing)
+      .map { glyphRange(forCharacterRange: $0, actualCharacterRange: nil) }
+      .sorted { $0.location < $1.location }
+    // 감춘 범위를 뺀 나머지만 그린다.
+    var location = glyphsToShow.location
+    let end = NSMaxRange(glyphsToShow)
+    for range in hidden where location < end {
+      if range.location > location {
+        super.drawGlyphs(forGlyphRange: NSRange(location: location, length: min(range.location, end) - location), at: origin)
+      }
+      location = max(location, NSMaxRange(range))
+    }
+    if location < end {
+      super.drawGlyphs(forGlyphRange: NSRange(location: location, length: end - location), at: origin)
+    }
+  }
+}
+
 /// 체크박스, 글머리 기호, 번호를 본문 뒤에 그리는 뷰. 텍스트 뷰의 서브뷰라 함께 스크롤된다.
 final class MemoMarkerView: UIView {
   weak var editor: MemoEditorView?

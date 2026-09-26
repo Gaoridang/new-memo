@@ -296,6 +296,7 @@ enum MemoDoodles {
   // MARK: - Drawing
 
   /// 낱말과 두들을 칩으로 그린다. (글자 뒤에 그리므로 낱말 글자는 칩 위에 보인다) dimmed는 글자 위치가 끝낸 할 일에 속하는지다.
+  /// include가 false인 낱말은 그리지 않는다. (다른 곳에서 그리는 문단)
   static func draw(
     storage: NSTextStorage,
     layoutManager: NSLayoutManager,
@@ -307,6 +308,7 @@ enum MemoDoodles {
     dirtyRect: CGRect,
     progress: (MemoDoodleMark) -> CGFloat,
     ghosts: [(ghost: DoodleGhost, progress: CGFloat)],
+    include: (NSRange) -> Bool = { _ in true },
     dimmed: (Int) -> Bool
   ) {
     guard !art.isEmpty, let context = UIGraphicsGetCurrentContext() else { return }
@@ -356,8 +358,8 @@ enum MemoDoodles {
       drawLayers(art.layers, in: frame, scale: easeOutBack(pop), alpha: alpha * min(1, pop * 2), context: context)
     }
 
-    for word in words(in: storage) { drawChip(word.range, word.mark.id, progress(word.mark)) }
-    for (ghost, t) in ghosts { drawChip(ghost.word, ghost.id, t) }
+    for word in words(in: storage) where include(word.range) { drawChip(word.range, word.mark.id, progress(word.mark)) }
+    for (ghost, t) in ghosts where include(ghost.word) { drawChip(ghost.word, ghost.id, t) }
   }
 
   private static func drawLayers(_ layers: [DoodleLayer], in frame: CGRect, scale: CGFloat, alpha: CGFloat, context: CGContext) {
