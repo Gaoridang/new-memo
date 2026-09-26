@@ -602,6 +602,49 @@ class MemoEditorView(context: Context, appContext: AppContext) :
     return words.size
   }
 
+  /**
+   * 지우기로 뗄 칩: cursor에서 끝나는 두들 낱말과 표시. 칩이 보일 때만 있다. (그림 세트가 없거나 조합 중에 붙어 아직 자리가 없으면 없다)
+   * 커서 앞 글자를 방금 친 것이면(칩 낱말에 이어 친 조사 등) 그 글자부터 지우도록 없다.
+   */
+  private fun chipEndingAt(cursor: Int): Pair<IntRange, MemoDoodleSpan>? {
+    val text = editText.text ?: return null
+    val typing = openStep?.let { it.kind == EditKind.TYPING && cursor > it.start && cursor <= it.end } ?: false
+    if (typing) return null
+    val (word, mark) = MemoDoodles.words(text).firstOrNull { it.first.last + 1 == cursor } ?: return null
+    val shown = text.getSpans(word.last, word.last + 1, MemoDoodleGapSpan::class.java).any { it.mark === mark }
+    return if (shown) word to mark else null
+  }
+
+  /**
+   * cursor에서 끝나는 두들 칩을 뗀다. 글자는 그대로이고 칩은 사라지며, 되돌리기 한 번으로 다시 붙는다.
+   * (칩 바로 뒤에서 지우기를 누를 때) 뗐으면 true
+   */
+  private fun removeChipEndingAt(cursor: Int): Boolean {
+    val text = editText.text ?: return false
+    val (word, mark) = chipEndingAt(cursor) ?: return false
+    // 칩 자리가 줄면 그 문단부터 줄이 다시 나뉜다.
+    finishTransitions { it.isAffectedByEdit(word.first) }
+    doodleAnimator.finish()
+    applying = true
+    try {
+      layoutDoodles()
+      text.removeSpan(mark)
+      if (canAnimateDoodles()) {
+        // 칩 자리는 사라지는 동안 남겨 둔다.
+        val gaps = text.getSpans(0, text.length, MemoDoodleGapSpan::class.java).filter { it.mark === mark }
+        gaps.forEach { it.exiting = true }
+        doodleAnimator.exit(gaps.map { it.mark })
+      }
+      layoutDoodles()
+    } finally {
+      applying = false
+    }
+    editText.invalidate()
+    emitContentIfChanged()
+    emitFormat()
+    return true
+  }
+
   override fun undo() {
     if (canUndo) restoreHistory(historyIndex - 1)
   }
@@ -895,6 +938,8 @@ class MemoEditorView(context: Context, appContext: AppContext) :
     val start = editText.selectionStart
     if (start < 0 || start != editText.selectionEnd) return false
     if (BaseInputConnection.getComposingSpanStart(text) != -1) return false
+    // 두들 칩 바로 뒤에서 지우면 글자 대신 칩을 뗀다. 한 번 더 지우면 글자가 지워진다.
+    if (removeChipEndingAt(start)) return true
     // 본문이 비었으면 JS에 알린다. (제목 칸으로 올라간다) 빈 목록 줄은 자리 표시 문자가 있어 아래에서 목록 표시만 없앤다.
     if (text.isEmpty()) {
       onBackspaceWhenEmpty(emptyMap())
@@ -920,6 +965,22 @@ class MemoEditorView(context: Context, appContext: AppContext) :
     emitContentIfChanged()
     emitFormat()
     return true
+  }
+
+  override fun onComposingBackspace(text: CharSequence): Boolean {
+    val editable = editText.text ?: return false
+    val cursor = editText.selectionStart
+    val start = BaseInputConnection.getComposingSpanStart(editable)
+    val end = BaseInputConnection.getComposingSpanEnd(editable)
+    if (start == -1 || start >= end || end != cursor || cursor != editText.selectionEnd) return false
+    // 조합 중인 글자에서 끝 글자(코드 포인트) 하나만 빼는 것이 지우기다.
+    val composing = editable.subSequence(start, end).toString()
+    if (text.toString() != composing.substring(0, composing.offsetByCodePoints(composing.length, -1))) return false
+    // 칩 낱말 전체를 조합 중일 때만 칩을 뗀다. (칩 바로 뒤에 이어 치는 한글은 조합 글자가 낱말의 끝 일부다)
+    if (chipEndingAt(cursor)?.first?.first != start) return false
+    // 입력기는 글자를 지운 줄 알고 있으니 조합을 끝내고 문서를 새로 읽게 한다.
+    endComposition()
+    return removeChipEndingAt(cursor)
   }
 
   override fun checkboxParagraphStart(x: Float, y: Float): Int? {

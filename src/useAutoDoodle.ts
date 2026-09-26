@@ -6,7 +6,7 @@ import { DOODLES } from './doodles/catalog';
 import { doodleArt, DOODLE_STYLES, type DoodleStyle } from './doodles/presets';
 import { DoodleIcon } from './icons';
 import { suggestDoodle, type DoodleSuggestion } from './jevApi';
-import { memoBlocks, nearbyLines, type MemoBlock } from './memoStorage';
+import { memoBlocks, nearbyLines, type MemoBlock, type MemoDoodle } from './memoStorage';
 import { loadSettings, saveSettings } from './settings';
 import type { ShowToast } from './Toast';
 import type { EditorIdle } from './useEditorIdle';
@@ -31,7 +31,8 @@ type Pick = DoodleSuggestion & { index: number; text: string };
  * 두들: 메모에서 그림으로 그릴 만한 낱말을 Jev가 고르면, 그 낱말을 그림과 함께 칩으로 바꾼다.
  * - 두들 버튼: 두들이 없는 메모면 메모 전체를 훑어 줄마다 하나씩 붙이고, 있으면 그림 세트를 바꾸거나 모두 뗀다.
  * - 두들이 붙은 메모에서는 새로 쓴 줄도 다 쓰고 넘어가면 붙인다. 알림은 띄우지 않고 되돌리기로 뗄 수 있다.
- * 두들은 메모 내용이라 붙이고 떼는 일은 모두 되돌리기 한 번으로 돌아간다. 되돌리기로 뗀 줄에는 이 화면에서 다시 붙이지 않는다.
+ * 두들은 메모 내용이라 붙이고 떼는 일은 모두 되돌리기 한 번으로 돌아간다. 칩 바로 뒤에서 지우면 그 칩만 떨어진다.
+ * 되돌리기나 지우기로 뗀 두들은 이 화면에서 그 줄과 그 낱말에 다시 붙이지 않는다.
  */
 export function useAutoDoodle(getTitle: () => string, getContent: () => string, idle: EditorIdle, showToast: ShowToast) {
   const [style, setStyle] = useState<DoodleStyle>(() => loadSettings().doodleStyle);
@@ -42,7 +43,9 @@ export function useAutoDoodle(getTitle: () => string, getContent: () => string, 
   // 훑는 사이 화면이 닫히거나 새로 훑으면 늦게 온 답은 버린다.
   const scanId = useRef(0);
   const suggestions = useRef(new Map<string, DoodleSuggestion | null>());
+  // 두들을 뗀 줄(글자 그대로)과, 뗀 두들(그림과 낱말). 줄을 고쳐 써도 같은 낱말에 같은 그림을 다시 붙이지 않는다.
   const undone = useRef(new Set<string>());
+  const declined = useRef(new Set<string>());
   const { whenIdle } = idle;
 
   useEffect(
@@ -79,7 +82,7 @@ export function useAutoDoodle(getTitle: () => string, getContent: () => string, 
       if (!canPlace(blocks, index) || !eligible(text) || undone.current.has(text.trim())) return;
 
       const doodle = await suggest(blocks, index, text, getTitle().trim());
-      if (!doodle) return;
+      if (!doodle || declined.current.has(declineKey(doodle.id, doodle.word))) return;
       whenIdle(async (editor) => {
         if (!decoratedRef.current || !canPlace(memoBlocks(getContent()), index, text)) return;
         const [added] = await editor.setDoodles([{ index, text, ...change(doodle) }], false);
@@ -188,16 +191,18 @@ export function useAutoDoodle(getTitle: () => string, getContent: () => string, 
     ]);
   }, [changeStyle, removeAll, scan, style]);
 
-  /** 본문이 바뀔 때마다 부른다. 두들이 있는 메모인지 살피고, 되돌리기로 두들이 떨어진 줄은 기억해 둔다. */
-  const onChangeContent = useCallback((previous: string, next: string, fromHistory: boolean) => {
+  /** 본문이 바뀔 때마다 부른다. 두들이 있는 메모인지 살피고, 되돌리기나 지우기로 두들이 떨어진 줄과 두들은 기억해 둔다. */
+  const onChangeContent = useCallback((previous: string, next: string) => {
     const blocks = memoBlocks(next);
     const has = hasDoodles(blocks);
     if (has !== decoratedRef.current) {
       decoratedRef.current = has;
       setDecorated(has);
     }
-    if (!fromHistory) return;
-    for (const line of removedDoodles(memoBlocks(previous), blocks)) undone.current.add(line);
+    for (const { line, doodle } of removedDoodles(memoBlocks(previous), blocks)) {
+      undone.current.add(line);
+      declined.current.add(declineKey(doodle.id, doodle.word));
+    }
   }, []);
 
   const art = useMemo(() => doodleArt(style), [style]);
@@ -218,11 +223,19 @@ function canPlace(blocks: MemoBlock[], index: number, text?: string) {
   return blocks.filter((item) => item.doodle).length < MAX_PER_MEMO;
 }
 
-/** 두들이 붙어 있다가 떨어진 줄들 */
-function removedDoodles(previous: MemoBlock[], next: MemoBlock[]): string[] {
-  const had = new Set(previous.filter((block) => block.doodle).map((block) => block.text.trim()));
-  return next.filter((block) => !block.doodle && had.has(block.text.trim())).map((block) => block.text.trim());
+/** 글자는 그대로인데 두들이 떨어진 줄들과 떨어진 두들 (되돌리기, 칩 뒤에서 지우기, 모두 떼기) */
+function removedDoodles(previous: MemoBlock[], next: MemoBlock[]): { line: string; doodle: MemoDoodle }[] {
+  const had = new Map<string, MemoDoodle>();
+  for (const block of previous) if (block.doodle) had.set(block.text.trim(), block.doodle);
+  return next.flatMap((block) => {
+    const line = block.text.trim();
+    const doodle = had.get(line);
+    return !block.doodle && doodle ? [{ line, doodle }] : [];
+  });
 }
+
+// 칩 낱말은 띄어쓰기 사이 전체라 앞뒤 문장 부호가 붙어 있을 수 있다. (Jev가 고르는 낱말은 부호를 뗀 것)
+const declineKey = (id: string, word: string) => `${id}:${word.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '')}`;
 
 /** 한 번에 size개씩 실행한다. 결과는 items 순서대로 */
 async function pool<T, R>(items: T[], size: number, run: (item: T) => Promise<R>): Promise<R[]> {

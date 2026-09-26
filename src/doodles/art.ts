@@ -210,6 +210,76 @@ function broom() {
   return parts.map((shape) => ({ ...shape, d: rotate(shape.d, 32) }));
 }
 
+// from에서 to까지 control 쪽으로 휜 굵은 관 (청소기 호스). 두 끝은 다른 모양 밑에 숨긴다.
+function tube(from: Point, control: Point, to: Point, width: number) {
+  const point = ([x, y]: Point) => `${num(x)} ${num(y)}`;
+  const side = (sign: number) => {
+    const normal = ([x0, y0]: Point, [x1, y1]: Point): Point => {
+      const length = Math.hypot(x1 - x0, y1 - y0);
+      return [(((y0 - y1) / length) * sign * width) / 2, (((x1 - x0) / length) * sign * width) / 2];
+    };
+    const [n0, n2] = [normal(from, control), normal(control, to)];
+    const a: Point = [from[0] + n0[0], from[1] + n0[1]];
+    const b: Point = [to[0] + n2[0], to[1] + n2[1]];
+    // 두 끝의 접선을 옆으로 옮긴 두 직선이 만나는 곳이 새 조절점이다.
+    const [d0x, d0y] = [control[0] - from[0], control[1] - from[1]];
+    const [d2x, d2y] = [to[0] - control[0], to[1] - control[1]];
+    const t = ((b[0] - a[0]) * d2y - (b[1] - a[1]) * d2x) / (d0x * d2y - d0y * d2x);
+    return [a, [a[0] + d0x * t, a[1] + d0y * t] as Point, b];
+  };
+  const [a1, c1, b1] = side(1);
+  const [a2, c2, b2] = side(-1);
+  return `M${point(a1)}Q${point(c1)} ${point(b1)}L${point(b2)}Q${point(c2)} ${point(a2)}Z`;
+}
+
+// 가운데가 가장 굵은 가늘고 긴 날 (가위)
+function blade(from: Point, to: Point, width: number) {
+  const [dx, dy] = [to[0] - from[0], to[1] - from[1]];
+  const length = Math.hypot(dx, dy);
+  const [nx, ny] = [(-dy / length) * width, (dx / length) * width];
+  const [mx, my] = [(from[0] + to[0]) / 2, (from[1] + to[1]) / 2];
+  return `M${num(from[0])} ${num(from[1])}Q${num(mx + nx)} ${num(my + ny)} ${num(to[0])} ${num(to[1])}Q${num(mx - nx)} ${num(my - ny)} ${num(from[0])} ${num(from[1])}Z`;
+}
+
+function toothbrush() {
+  const parts = [
+    body(rect(13.6, 8.6, 7.8, 4.4, 0.6), { tone: 'white' }),
+    line('M15.6 9.2L15.6 12.4M17.5 9.2L17.5 12.4M19.4 9.2L19.4 12.4', { tone: 'white' }),
+    body('M13.4 8.8C13.2 7.4 14.4 6.4 15.6 6.9C16.3 5.7 18.1 5.7 18.7 6.9C19.9 6.2 21.5 7.2 21.5 8.8Z', { tone: 'mint' }),
+    body(rect(2, 12.8, 20, 3, 1.5)),
+  ];
+  return parts.map((shape) => ({ ...shape, d: rotate(shape.d, -40) }));
+}
+
+function key() {
+  const parts = [
+    body(
+      'M9.6 10.9L20.5 10.9C21 10.9 21.4 11.3 21.4 11.8L21.4 15.2C21.4 15.7 21 16.1 20.5 16.1L19.9 16.1C19.4 16.1 19 15.7 19 15.2L19 13.1L17.9 13.1L17.9 14.5C17.9 15 17.5 15.4 17 15.4L16.6 15.4C16.1 15.4 15.7 15 15.7 14.5L15.7 13.1L9.6 13.1Z',
+    ),
+    body(circle(6.4, 12, 4.2)),
+    line(circle(5.6, 12, 1.4)),
+  ];
+  return parts.map((shape) => ({ ...shape, d: rotate(shape.d, -45) }));
+}
+
+function scissors() {
+  const [left, right]: Point[] = [
+    [7.4, 17.6],
+    [16.6, 17.6],
+  ];
+  return [
+    body(blade(left, [16.8, 2.6], 3.4), { tone: 'gray' }),
+    body(blade(right, [7.2, 2.6], 3.4), { tone: 'gray' }),
+    dot(circle(12, 10.2, 0.75), { tone: 'gray' }),
+    body(`${circle(left[0], left[1], 3.3)}${circle(right[0], right[1], 3.3)}`),
+    body(`${circle(left[0], left[1], 1.7)}${circle(right[0], right[1], 1.7)}`, { tone: 'white' }),
+  ];
+}
+
+// 볼이 볼록한 햄스터 머리. 흰 얼굴 위에 주황 머리털을 칠한 뒤 테두리를 다시 긋는다.
+const HAMSTER =
+  'M12 5.4C15.6 5.4 18 7.6 18.6 10.4C20.4 11.4 21.2 13.4 20.8 15.6C20.2 18.8 16.8 20.8 12 20.8C7.2 20.8 3.8 18.8 3.2 15.6C2.8 13.4 3.6 11.4 5.4 10.4C6 7.6 8.4 5.4 12 5.4Z';
+
 export const DOODLE_ART: Record<DoodleId, DoodleArt> = {
   coffee: {
     tone: 'cream',
@@ -429,6 +499,122 @@ export const DOODLE_ART: Record<DoodleId, DoodleArt> = {
       line('M12 15.4L12 16.3M10.7 16.6Q11.35 17.4 12 16.3Q12.65 17.4 13.3 16.6'),
     ],
   },
+  rabbit: {
+    tone: 'pink',
+    shapes: [
+      body(ellipse(8.9, 6.9, 2.5, 5.2, -12), { tone: 'white' }),
+      body(ellipse(15.1, 6.9, 2.5, 5.2, 12), { tone: 'white' }),
+      body(ellipse(8.9, 7.4, 1.1, 3.4, -12)),
+      body(ellipse(15.1, 7.4, 1.1, 3.4, 12)),
+      body('M12 9.8C16.5 9.8 19.8 12.5 19.8 16C19.8 19.2 16.5 21.2 12 21.2C7.5 21.2 4.2 19.2 4.2 16C4.2 12.5 7.5 9.8 12 9.8Z', {
+        tone: 'white',
+      }),
+      dot(`${circle(9, 15.2, 0.95)}${circle(15, 15.2, 0.95)}`),
+      body('M11.2 16.5L12.8 16.5L12 17.4Z'),
+      line('M12 17.4L12 18.1M10.9 18.5Q11.45 19.1 12 18.1Q12.55 19.1 13.1 18.5'),
+    ],
+  },
+  bear: {
+    tone: 'brown',
+    shapes: [
+      body(`${circle(6.2, 7.2, 3)}${circle(17.8, 7.2, 3)}`),
+      body(`${circle(6.2, 7.2, 1.5)}${circle(17.8, 7.2, 1.5)}`, { tone: 'latte' }),
+      body(ellipse(12, 13.6, 8.2, 7.2)),
+      body(ellipse(12, 16.4, 3.7, 2.8), { tone: 'cream' }),
+      dot(`${ellipse(12, 15.1, 1.3, 0.9)}${circle(8.6, 12.3, 0.95)}${circle(15.4, 12.3, 0.95)}`),
+      line('M12 16L12 16.9M10.8 17.4Q11.4 18 12 16.9Q12.6 18 13.2 17.4'),
+    ],
+  },
+  pig: {
+    tone: 'pink',
+    shapes: [
+      body('M5.3 9.2C4.8 7.6 4.8 5.6 5.6 4.5C6 4 6.6 4 7.1 4.3L10.6 6.8Z'),
+      body(mirror('M5.3 9.2C4.8 7.6 4.8 5.6 5.6 4.5C6 4 6.6 4 7.1 4.3L10.6 6.8Z')),
+      body('M6.2 7.6C6 6.8 6.1 6 6.4 5.6L8.4 6.9Z', { tone: 'coral' }),
+      body(mirror('M6.2 7.6C6 6.8 6.1 6 6.4 5.6L8.4 6.9Z'), { tone: 'coral' }),
+      body(ellipse(12, 13.4, 8.4, 7.4)),
+      body(ellipse(12, 15.6, 3.8, 2.7)),
+      dot(`${ellipse(10.7, 15.6, 0.62, 0.95)}${ellipse(13.3, 15.6, 0.62, 0.95)}${circle(8.4, 11.8, 0.95)}${circle(15.6, 11.8, 0.95)}`),
+    ],
+  },
+  hamster: {
+    tone: 'peach',
+    shapes: [
+      body(`${circle(6.9, 7, 2.2)}${circle(17.1, 7, 2.2)}`),
+      body(`${circle(6.9, 7, 1.05)}${circle(17.1, 7, 1.05)}`, { tone: 'pink' }),
+      body(HAMSTER, { tone: 'white' }),
+      body(
+        'M5.4 10.4C6 7.6 8.4 5.4 12 5.4C15.6 5.4 18 7.6 18.6 10.4C16.8 10.2 14.6 10.2 13.4 11.2C12.8 11.7 12.4 12.6 12 12.6C11.6 12.6 11.2 11.7 10.6 11.2C9.4 10.2 7.2 10.2 5.4 10.4Z',
+      ),
+      line(HAMSTER),
+      dot(`${circle(8.6, 12.8, 0.95)}${circle(15.4, 12.8, 0.95)}`),
+      body(ellipse(12, 14.6, 0.95, 0.7), { tone: 'pink' }),
+      line('M12 15.3L12 16.1M10.8 16.6Q11.4 17.2 12 16.1Q12.6 17.2 13.2 16.6'),
+    ],
+  },
+  panda: {
+    tone: 'white',
+    shapes: [
+      body(`${circle(6.2, 7.2, 2.9)}${circle(17.8, 7.2, 2.9)}`, { tone: 'dark' }),
+      body(ellipse(12, 13.6, 8.2, 7.3)),
+      body(ellipse(8.7, 12.9, 1.9, 2.5, 35), { tone: 'dark' }),
+      body(ellipse(15.3, 12.9, 1.9, 2.5, -35), { tone: 'dark' }),
+      shine(`${circle(9, 12.5, 0.25)}${circle(15, 12.5, 0.25)}`),
+      dot(ellipse(12, 15.8, 1.3, 0.9), { tone: 'dark' }),
+      line('M12 16.7L12 17.5M10.8 18Q11.4 18.6 12 17.5Q12.6 18.6 13.2 18', { tone: 'dark' }),
+    ],
+  },
+  chick: {
+    tone: 'butter',
+    shapes: [
+      line('M10.2 19.4L10.2 21.2M13.8 19.4L13.8 21.2M9.2 21.2L11.2 21.2M12.8 21.2L14.8 21.2', { tone: 'orange' }),
+      body(ellipse(5.2, 14.2, 1.6, 2.6, 30)),
+      body(ellipse(18.8, 14.2, 1.6, 2.6, -30)),
+      line('M11.4 5.6C11 4.2 11.6 3.1 12.8 3M12 5.6C12.4 4.6 13.3 4.2 14.2 4.5'),
+      body(circle(12, 12.8, 7.4)),
+      dot(`${circle(9.4, 11.6, 0.95)}${circle(14.6, 11.6, 0.95)}`),
+      body('M10.5 13.3L12 12.3L13.5 13.3L12 14.5Z', { tone: 'orange' }),
+    ],
+  },
+  penguin: {
+    tone: 'sky',
+    shapes: [
+      body(`${ellipse(9.4, 20.5, 2, 1.1)}${ellipse(14.6, 20.5, 2, 1.1)}`, { tone: 'orange' }),
+      body(ellipse(5.3, 14.2, 1.5, 3.3, 25)),
+      body(ellipse(18.7, 14.2, 1.5, 3.3, -25)),
+      body('M12 3.2C16.1 3.2 18.4 6.6 18.4 11.2L18.4 15.4C18.4 18.6 15.6 20.6 12 20.6C8.4 20.6 5.6 18.6 5.6 15.4L5.6 11.2C5.6 6.6 7.9 3.2 12 3.2Z'),
+      body(
+        'M12 7.4C12.8 6.4 14.6 6.3 15.5 7.5C16.4 8.7 16.8 10.4 16.8 12.2L16.8 15.3C16.8 17.6 14.8 19.2 12 19.2C9.2 19.2 7.2 17.6 7.2 15.3L7.2 12.2C7.2 10.4 7.6 8.7 8.5 7.5C9.4 6.3 11.2 6.4 12 7.4Z',
+        { tone: 'white' },
+      ),
+      dot(`${circle(10, 10.6, 0.95)}${circle(14, 10.6, 0.95)}`),
+      body('M10.8 12.2L13.2 12.2L12 13.6Z', { tone: 'orange' }),
+    ],
+  },
+  fish: {
+    tone: 'orange',
+    shapes: [
+      body('M9.6 8.2C10.2 6.2 12.2 5.2 14.2 5.8C14.2 7 13.6 8 12.8 8.6Z'),
+      body('M15.8 13L20.4 9.1C21 8.6 21.8 9.1 21.6 9.8L21 13L21.6 16.2C21.8 16.9 21 17.4 20.4 16.9Z'),
+      body('M2.8 13C4.6 9.6 7.8 7.6 11.2 7.6C14.2 7.6 16.6 9.8 17.8 13C16.6 16.2 14.2 18.4 11.2 18.4C7.8 18.4 4.6 16.4 2.8 13Z'),
+      dot(circle(6.8, 12.2, 0.95)),
+      line('M10.2 10Q11.4 13 10.2 16'),
+      line(`${circle(3.2, 8.4, 0.95)}${circle(4.8, 5.6, 0.6)}`, { tone: 'sky' }),
+    ],
+  },
+  turtle: {
+    tone: 'mint',
+    shapes: [
+      body(`${ellipse(7.8, 17, 1.8, 2.3)}${ellipse(16.8, 17, 1.8, 2.3)}`),
+      body('M19.6 14.4L21.8 15.4L19.6 16.4Z'),
+      body(ellipse(4.7, 11.4, 3, 2.7)),
+      body('M5.2 15.6C5.2 10.4 8.4 6.6 12.8 6.6C17.2 6.6 20.4 10.4 20.4 15.6Z', { tone: 'latte' }),
+      line('M10.6 9.6L15 9.6L16.2 12.3L15 15M10.6 9.6L9.4 12.3L10.6 15', { tone: 'latte' }),
+      body(rect(4.4, 14.8, 16.8, 2, 1), { tone: 'latte' }),
+      dot(circle(3.8, 10.8, 0.85)),
+      line('M2.5 12.6Q3.1 13.1 3.8 12.8'),
+    ],
+  },
   book: {
     tone: 'coral',
     shapes: [
@@ -644,6 +830,180 @@ export const DOODLE_ART: Record<DoodleId, DoodleArt> = {
   cleaning: {
     tone: 'butter',
     shapes: [...broom(), body(sparkle(6, 6.4, 2.8), { tone: 'sky' }), body(sparkle(3.9, 11.1, 1.5), { tone: 'sky' })],
+  },
+  tv: {
+    tone: 'orange',
+    shapes: [
+      line('M12 7.2L8.6 3.6M12 7.2L15.4 3.6M6.6 19.6L5.8 21.2M17.4 19.6L18.2 21.2', { tone: 'dark' }),
+      body(rect(3, 7, 18, 12.8, 2.6)),
+      body(rect(5, 9, 10.6, 8.8, 1.6), { tone: 'sky' }),
+      shine('M6.9 12C6.9 11.2 7.3 10.8 8.1 10.8'),
+      dot(`${circle(18.3, 11.2, 0.85)}${circle(18.3, 14.2, 0.85)}`),
+    ],
+  },
+  fridge: {
+    tone: 'mint',
+    shapes: [
+      body(rect(5.4, 2.4, 13.2, 19.4, 2.4)),
+      line('M5.4 9.2L18.6 9.2'),
+      line('M7.9 4.8L7.9 7M7.9 11.6L7.9 15'),
+      body(rotate(rect(12.2, 12.4, 4.2, 4.2, 0.5), 8, 14.3, 14.5), { tone: 'butter' }),
+    ],
+  },
+  washer: {
+    tone: 'lavender',
+    shapes: [
+      body(rect(3.8, 2.8, 16.4, 18.6, 2.4)),
+      line('M3.8 7L20.2 7'),
+      dot(`${circle(6.6, 4.9, 0.75)}${circle(9, 4.9, 0.75)}`),
+      body(rect(13.4, 4.1, 4.4, 1.6, 0.8), { tone: 'white' }),
+      body(circle(12, 14.2, 5.3), { tone: 'white' }),
+      // 문 안의 물: 물결 끝에서 원을 따라 아래로 돈다.
+      body(`M7.94 14.8Q9.97 13.3 12 14.8Q14.03 16.3 16.06 14.8${arc(12, 14.2, 4.1, 8.4, 171.6)}Z`, { tone: 'sky' }),
+    ],
+  },
+  microwave: {
+    tone: 'coral',
+    shapes: [
+      line('M6.2 18.6L6.2 20.2M17.8 18.6L17.8 20.2'),
+      body(rect(2.6, 5.2, 18.8, 13.8, 2.4)),
+      body(rect(4.6, 7.2, 10.6, 9.8, 1.4), { tone: 'butter' }),
+      shine('M6.6 10.2C6.6 9.6 7 9.2 7.6 9.2'),
+      body(`${circle(18.3, 9.8, 1.2)}${circle(18.3, 13.6, 1.2)}`, { tone: 'white' }),
+    ],
+  },
+  ricecooker: {
+    tone: 'pink',
+    shapes: [
+      line('M10.8 5.2Q10 4.3 10.8 3.4Q11.6 2.5 10.8 1.6M13.2 5.2Q12.4 4.3 13.2 3.4Q14 2.5 13.2 1.6'),
+      body('M3.8 11.4L20.2 11.4L19.7 17.8C19.5 19.6 18 20.9 16.2 20.9L7.8 20.9C6 20.9 4.5 19.6 4.3 17.8Z', { tone: 'white' }),
+      body('M4.2 12C4.2 8.6 7.6 6.4 12 6.4C16.4 6.4 19.8 8.6 19.8 12Z'),
+      body(rect(9.2, 14, 5.6, 3.4, 1.1), { tone: 'sky' }),
+    ],
+  },
+  aircon: {
+    tone: 'sky',
+    shapes: [
+      body(rect(2.4, 4.6, 19.2, 9, 2.4), { tone: 'white' }),
+      line('M5.2 10.9L18.8 10.9', { tone: 'white' }),
+      dot(circle(18.4, 7.4, 0.75), { tone: 'mint' }),
+      line('M7.4 15.8Q8.3 17 7.4 18.2Q6.5 19.4 7.4 20.6M12 15.8Q12.9 17 12 18.2Q11.1 19.4 12 20.6M16.6 15.8Q17.5 17 16.6 18.2Q15.7 19.4 16.6 20.6'),
+    ],
+  },
+  fan: {
+    tone: 'mint',
+    shapes: [
+      body(rect(10.9, 15.6, 2.2, 4.4, 0.6)),
+      body(rect(6.2, 19.4, 11.6, 2.2, 1.1)),
+      body(circle(12, 10, 7.2), { tone: 'white' }),
+      ...[0, 120, 240].map((degrees) => body(rotate(ellipse(12.8, 6.6, 2.1, 3.1, 25), degrees, 12, 10))),
+      body(circle(12, 10, 1.5)),
+    ],
+  },
+  vacuum: {
+    tone: 'butter',
+    shapes: [
+      body(tube([11.2, 13.4], [12.6, 2.2], [17.2, 7.6], 1.9), { tone: 'gray' }),
+      body(rotate(rect(17, 5.4, 2.2, 12.6, 1.1), -12, 18.1, 11.7), { tone: 'gray' }),
+      body(rect(15.2, 17.2, 7.2, 2.4, 1.2), { tone: 'dark' }),
+      body(
+        'M2.4 17.2C2.4 13.4 5.2 10.6 8.6 10.6C11.6 10.6 13.8 12.6 14.4 15.6L14.8 17.8C14.9 18.6 14.4 19.2 13.6 19.2L4.4 19.2C3.3 19.2 2.4 18.3 2.4 17.2Z',
+      ),
+      body(circle(6.2, 17.4, 2.4), { tone: 'dark' }),
+      body(circle(6.2, 17.4, 0.8), { tone: 'white' }),
+    ],
+  },
+  battery: {
+    tone: 'mint',
+    shapes: [
+      body(rect(18.8, 9.6, 2.4, 4.8, 0.8), { tone: 'white' }),
+      body(rect(2.8, 6.6, 16.8, 10.8, 2.6), { tone: 'white' }),
+      body(rect(4.8, 8.6, 9.4, 6.8, 1.2)),
+      body(
+        polygon([
+          [12.9, 7.2],
+          [8.4, 12.8],
+          [11.4, 12.8],
+          [10.4, 16.8],
+          [14.9, 11.2],
+          [11.9, 11.2],
+        ]),
+        { tone: 'butter' },
+      ),
+    ],
+  },
+  toothbrush: {
+    tone: 'sky',
+    shapes: toothbrush(),
+  },
+  soap: {
+    tone: 'lavender',
+    shapes: [
+      body(`${circle(19.4, 6.2, 1.9)}${circle(20.6, 10.4, 1.15)}`, { tone: 'sky' }),
+      shine('M18.4 5.8C18.5 5.3 18.9 4.9 19.4 4.8'),
+      body('M13.6 3L8.2 3C7.2 3 6.4 3.8 6.4 4.8L6.4 5.2L7.8 5.2L7.8 4.6L13.6 4.6C14 4.6 14.4 4.2 14.4 3.8C14.4 3.4 14 3 13.6 3Z'),
+      body(rect(11, 4.6, 2, 2.8), { tone: 'white' }),
+      body(rect(9, 7, 6, 2.4, 0.8)),
+      body(rect(5.8, 9, 12.4, 12.2, 3)),
+      body(rect(8.2, 12, 7.6, 6.2, 1.4), { tone: 'white' }),
+      body(drop(12, 15.2, 1.4), { tone: 'sky' }),
+    ],
+  },
+  tissue: {
+    tone: 'pink',
+    shapes: [
+      body('M3.6 11.2L5.8 8.6L18.2 8.6L20.4 11.2Z'),
+      body('M9 9.6C8.8 7.4 7.8 6 8.8 4.6C10 5.4 11.4 5.2 12.2 4C13.2 5 14.6 5.2 15.4 4.8C14.8 6.4 14.8 8 15 9.6Z', { tone: 'white' }),
+      body(rect(3.6, 11.2, 16.8, 9.6, 2)),
+      body(heart(12, 15.8, 4.6), { tone: 'white' }),
+    ],
+  },
+  trash: {
+    tone: 'mint',
+    shapes: [
+      body('M10 5.2L10 4.4C10 3.8 10.4 3.4 11 3.4L13 3.4C13.6 3.4 14 3.8 14 4.4L14 5.2Z'),
+      body('M5.8 8.4L18.2 8.4L17 19.8C16.9 20.7 16.2 21.3 15.3 21.3L8.7 21.3C7.8 21.3 7.1 20.7 7 19.8Z'),
+      line('M10 11L10.3 18.6M14 11L13.7 18.6'),
+      body(rect(4.4, 5.2, 15.2, 3.2, 1.2)),
+    ],
+  },
+  key: {
+    tone: 'butter',
+    shapes: key(),
+  },
+  mask: {
+    tone: 'sky',
+    shapes: [
+      line('M5.6 9.4C3 8.8 1.8 10.6 2.2 12.6C2.6 14.4 3.8 15.2 5.6 14.6'),
+      line(mirror('M5.6 9.4C3 8.8 1.8 10.6 2.2 12.6C2.6 14.4 3.8 15.2 5.6 14.6')),
+      body('M5.2 8.6C9.5 6.8 14.5 6.8 18.8 8.6L18.8 14.6C14.5 17.6 9.5 17.6 5.2 14.6Z'),
+      line('M7.4 10.6C10.5 9.6 13.5 9.6 16.6 10.6M7.4 13.2C10.5 12.2 13.5 12.2 16.6 13.2'),
+    ],
+  },
+  glasses: {
+    tone: 'brown',
+    shapes: [
+      line('M10.6 11.6Q12 10.6 13.4 11.6M3.2 11L1.8 9.6M20.8 11L22.2 9.6'),
+      body(`${circle(6.9, 13, 4.2)}${circle(17.1, 13, 4.2)}`),
+      body(`${circle(6.9, 13, 3)}${circle(17.1, 13, 3)}`, { tone: 'sky' }),
+      shine('M5.2 12.4C5.4 11.5 6 11 6.8 10.9M15.4 12.4C15.6 11.5 16.2 11 17 10.9'),
+    ],
+  },
+  scissors: {
+    tone: 'coral',
+    shapes: scissors(),
+  },
+  bed: {
+    tone: 'sky',
+    shapes: [
+      body(rect(5, 12.4, 14.6, 3.8, 0.8), { tone: 'white' }),
+      body(rect(6.4, 9.4, 5.4, 3.6, 1.8), { tone: 'white' }),
+      body('M10.6 11.2C13.6 10.6 16.6 10.6 19.6 11.2L19.6 16.4L10.6 16.4Z'),
+      line('M10.6 13.4L19.6 13.4'),
+      body(rect(4.4, 15.6, 16, 2.6, 0.6), { tone: 'latte' }),
+      body(rect(2.4, 5.8, 3.6, 14.2, 1.6), { tone: 'latte' }),
+      body(rect(18.6, 11.2, 3, 8.8, 1.3), { tone: 'latte' }),
+    ],
   },
   pill: {
     tone: 'coral',

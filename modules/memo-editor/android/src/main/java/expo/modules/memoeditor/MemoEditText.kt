@@ -16,6 +16,8 @@ import android.widget.EditText
 interface MemoEditTextListener {
   fun onSelectionChanged(start: Int, end: Int)
   fun onBackspace(): Boolean
+  /** 입력기가 조합 중인 낱말에서 끝 글자를 지우려 한다. text는 지운 뒤의 조합 글자다. 처리했으면 true */
+  fun onComposingBackspace(text: CharSequence): Boolean
   fun checkboxParagraphStart(x: Float, y: Float): Int?
   fun onCheckboxTap(paragraphStart: Int)
   fun onPastePlainText(text: String)
@@ -52,13 +54,19 @@ class MemoEditText(context: Context) : EditText(context) {
     val base = super.onCreateInputConnection(outAttrs) ?: return null
     return object : InputConnectionWrapper(base, true) {
       override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
-        if (beforeLength == 1 && afterLength == 0 && listener?.onBackspace() == true) return true
+        if (afterLength == 0 && isCharacterBeforeCursor(beforeLength) && listener?.onBackspace() == true) return true
         return super.deleteSurroundingText(beforeLength, afterLength)
       }
 
       override fun deleteSurroundingTextInCodePoints(beforeLength: Int, afterLength: Int): Boolean {
         if (beforeLength == 1 && afterLength == 0 && listener?.onBackspace() == true) return true
         return super.deleteSurroundingTextInCodePoints(beforeLength, afterLength)
+      }
+
+      // 커서가 닿은 낱말을 다시 조합하는 입력기(영어 자동 고침)는 지우기를 한 글자 줄인 조합 글자로 보낸다.
+      override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
+        if (text != null && listener?.onComposingBackspace(text) == true) return true
+        return super.setComposingText(text, newCursorPosition)
       }
 
       override fun sendKeyEvent(event: KeyEvent): Boolean {
@@ -75,6 +83,14 @@ class MemoEditText(context: Context) : EditText(context) {
   override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
     if (keyCode == KeyEvent.KEYCODE_DEL && listener?.onBackspace() == true) return true
     return super.onKeyDown(keyCode, event)
+  }
+
+  /** 커서 앞 한 글자의 길이인가. 입력기는 서로게이트 쌍(이모지 등)을 두 칸으로 지운다. */
+  private fun isCharacterBeforeCursor(length: Int): Boolean {
+    if (length == 1) return true
+    val text = text ?: return false
+    val end = selectionStart
+    return length == 2 && end >= 2 && Character.isSurrogatePair(text[end - 2], text[end - 1])
   }
 
   // 포커스를 뺄 때 Android가 화면의 첫 입력칸인 이 편집기에 포커스를 다시 주지 않게 한다.

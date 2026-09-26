@@ -196,15 +196,31 @@ export function updateSavedMemo(id: string, changes: SavedBlockChange[], dues: R
   }
 }
 
-// doodle은 문단에 두들이 붙은 낱말이 있는지
-export type MemoBlock = { type: string; checked: boolean; text: string; doodle: boolean };
+// doodle은 문단에 붙은 두들 (없으면 null)
+export type MemoBlock = { type: string; checked: boolean; text: string; doodle: MemoDoodle | null };
 
-type DocumentBlock = { type?: unknown; checked?: unknown; runs?: { text?: unknown; doodle?: unknown }[] };
+/** 두들 이름과 두들이 붙은 낱말 */
+export type MemoDoodle = { id: string; word: string };
+
+type DocumentRun = { text?: unknown; doodle?: unknown };
+type DocumentBlock = { type?: unknown; checked?: unknown; runs?: DocumentRun[] };
 
 const documentBlockType = (block: DocumentBlock) => (typeof block.type === 'string' ? block.type : 'paragraph');
 
-const documentBlockText = (block: DocumentBlock) =>
-  (block.runs ?? []).map((run) => (typeof run.text === 'string' ? run.text : '')).join('');
+const runText = (run: DocumentRun) => (typeof run.text === 'string' ? run.text : '');
+
+const documentBlockText = (block: DocumentBlock) => (block.runs ?? []).map(runText).join('');
+
+// 문단의 첫 두들. 두들은 낱말의 글자에만 표시되고, 서식이 섞인 낱말은 여러 조각으로 나뉜다.
+function documentBlockDoodle(block: DocumentBlock): MemoDoodle | null {
+  const runs = block.runs ?? [];
+  const first = runs.findIndex((run) => typeof run.doodle === 'string');
+  if (first === -1) return null;
+  const id = runs[first].doodle as string;
+  let word = '';
+  for (let i = first; i < runs.length && runs[i].doodle === id; i++) word += runText(runs[i]);
+  return { id, word };
+}
 
 // 에디터 문서의 문단들. 서식은 빼고 글자와 문단 종류만 남긴다.
 export function memoBlocks(content: string): MemoBlock[] {
@@ -215,7 +231,7 @@ export function memoBlocks(content: string): MemoBlock[] {
       type: documentBlockType(block),
       checked: block.checked === true,
       text: documentBlockText(block),
-      doodle: (block.runs ?? []).some((run) => typeof run.doodle === 'string'),
+      doodle: documentBlockDoodle(block),
     }));
   } catch {
     return [];
