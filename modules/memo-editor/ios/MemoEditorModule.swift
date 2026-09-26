@@ -1,11 +1,19 @@
 import ExpoModulesCore
 
+/// index번째 문단의 내용이 text이고 종류가 from이면 to로 바꾼다.
+struct ParagraphBlockChange: Record {
+  @Field var index: Int = 0
+  @Field var text: String = ""
+  @Field var from: String = ""
+  @Field var to: String = ""
+}
+
 public class MemoEditorModule: Module {
   public func definition() -> ModuleDefinition {
     Name("MemoEditor")
 
     View(MemoEditorView.self) {
-      Events("onChangeContent", "onChangeFormat", "onFocusChange", "onLeaveParagraph")
+      Events("onChangeContent", "onChangeFormat", "onChangeHistory", "onFocusChange", "onLeaveParagraph")
 
       Prop("initialContent") { (view: MemoEditorView, value: String?) in
         view.setInitialContent(value)
@@ -37,6 +45,12 @@ public class MemoEditorModule: Module {
       Prop("insetTop") { (view: MemoEditorView, value: Double?) in
         view.insetTop = CGFloat(value ?? 14)
       }
+      Prop("accessoryID") { (view: MemoEditorView, value: String?) in
+        view.textView.accessoryID = value
+      }
+      Prop("swipeBackHaptic") { (view: MemoEditorView, value: Bool?) in
+        view.swipeBackHaptic = value ?? false
+      }
 
       OnViewDidUpdateProps { (view: MemoEditorView) in
         view.didUpdateProps()
@@ -66,8 +80,16 @@ public class MemoEditorModule: Module {
         view.toggleBlock(named: kind)
       }.runOnQueue(.main)
 
-      AsyncFunction("setParagraphBlock") { (view: MemoEditorView, index: Int, text: String, from: String, to: String) -> Bool in
-        view.setParagraphBlock(index: index, text: text, from: from, to: to)
+      AsyncFunction("setParagraphBlocks") { (view: MemoEditorView, changes: [ParagraphBlockChange]) -> [Bool] in
+        view.setParagraphBlocks(changes)
+      }.runOnQueue(.main)
+
+      AsyncFunction("undo") { (view: MemoEditorView) in
+        view.undo()
+      }.runOnQueue(.main)
+
+      AsyncFunction("redo") { (view: MemoEditorView) in
+        view.redo()
       }.runOnQueue(.main)
     }
   }

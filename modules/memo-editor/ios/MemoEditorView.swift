@@ -1,11 +1,25 @@
 import ExpoModulesCore
 import UIKit
 
+/// 되돌리기 단계를 나누는 기준
+private enum EditKind {
+  /// 한 글자 치기·지우기와 한글 조합. 잠깐 멈추기 전까지 한 단계로 합친다.
+  case typing
+  /// 줄 바꿈. 새 단계를 열고 이어서 치는 글자를 합친다.
+  case newline
+  /// 붙여넣기, 자동 고침, 서식, 목록, 체크처럼 따로 되돌리는 편집
+  case command
+}
+
 final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate {
   let onChangeContent = EventDispatcher()
   let onChangeFormat = EventDispatcher()
+  let onChangeHistory = EventDispatcher()
   let onFocusChange = EventDispatcher()
   let onLeaveParagraph = EventDispatcher()
+
+  private static let typingPause: CFTimeInterval = 1.0
+  private static let historyLimit = 100
 
   let textView: MemoTextView
   private let layoutManager: NSLayoutManager
@@ -24,6 +38,11 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
   var insetTop: CGFloat = 14 {
     didSet { updateInsets() }
   }
+  /// 이 화면을 밀어 뒤로 갈 때, 손을 떼 넘어가기로 정해지는 순간 가볍게 울린다.
+  var swipeBackHaptic = false {
+    didSet { updateSwipeBackHaptic() }
+  }
+  private let swipeBackHaptics = SwipeBackHaptics()
 
   /// 글자가 하나도 없는 마지막 빈 줄의 문단 종류. 붙일 글자가 없어 따로 기억한다.
   private(set) var trailingBlock: MemoBlock = .paragraph
@@ -39,6 +58,18 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
   private var lastFormat: (inline: InlineFlags, block: MemoBlock)?
   /// 커서가 있는 문단. 고친 문단에서 커서가 떠나면 JS에 알린다. (할 일 자동 감지)
   private var activeParagraph: (index: Int, text: String, edited: Bool)?
+
+  /// 되돌리기 기록. 단계마다 문서 전체(저장 형식 JSON)를 남기고, historyIndex가 지금 문서다.
+  private var history: [String] = []
+  private var historyIndex = 0
+  /// 마지막 단계가 타이핑이면 잠깐 멈추기 전까지 이어지는 타이핑을 그 단계에 합친다.
+  private var typingStepOpen = false
+  private var lastTypingAt: CFTimeInterval = 0
+  private var pendingEditKind = EditKind.typing
+  private var lastHistoryState: (canUndo: Bool, canRedo: Bool)?
+
+  var canUndo: Bool { historyIndex > 0 }
+  var canRedo: Bool { historyIndex < history.count - 1 }
 
   private var storage: NSTextStorage { textView.textStorage }
   private var string: NSString { textView.textStorage.string as NSString }
@@ -60,6 +91,7 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
     textStorage.delegate = self
     textView.editor = self
     textView.markerView.editor = self
+    textView.memoUndoManager.editor = self
     textView.delegate = self
     textView.backgroundColor = .clear
     textView.alwaysBounceVertical = true
@@ -80,6 +112,24 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
   override func didMoveToWindow() {
     super.didMoveToWindow()
     focusIfNeeded()
+    updateSwipeBackHaptic()
+  }
+
+  private func updateSwipeBackHaptic() {
+    if swipeBackHaptic, window != nil, let screen = owningViewController {
+      swipeBackHaptics.attach(to: screen)
+    } else {
+      swipeBackHaptics.detach()
+    }
+  }
+
+  private var owningViewController: UIViewController? {
+    var responder: UIResponder? = self
+    while let current = responder {
+      if let controller = current as? UIViewController { return controller }
+      responder = current.next
+    }
+    return nil
   }
 
   // MARK: - Props
@@ -128,11 +178,15 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
     trailingBlock = parsed?.trailingBlock ?? .paragraph
     editedRange = nil
     textView.selectedRange = NSRange(location: storage.length, length: 0)
-    textView.undoManager?.removeAllActions()
-    lastContent = MemoDocument.serialize(storage, trailingBlock: trailingBlock)
+    let content = MemoDocument.serialize(storage, trailingBlock: trailingBlock)
+    lastContent = content
+    history = [content]
+    historyIndex = 0
+    typingStepOpen = false
     syncTypingAttributes()
     refreshDecorations()
     emitFormat()
+    emitHistory()
   }
 
   private func focusIfNeeded() {
@@ -199,26 +253,87 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
     structureDidChange()
   }
 
-  /// index번째 문단의 내용이 text이고 종류가 from일 때만 to로 바꾼다. 커서와 스크롤은 그대로 둔다.
-  func setParagraphBlock(index: Int, text: String, from: String, to: String) -> Bool {
-    guard let fromBlock = MemoBlock(rawValue: from), let toBlock = MemoBlock(rawValue: to) else { return false }
+  /// 문단마다 내용이 text이고 종류가 from일 때만 to로 바꾼다. 한 번에 바꾼 것은 되돌리기 한 번으로 돌아간다.
+  /// 커서와 스크롤은 그대로 둔다. 바꾼 문단마다 true를 돌려준다.
+  func setParagraphBlocks(_ changes: [ParagraphBlockChange]) -> [Bool] {
     let paragraphs = string.memoParagraphs()
-    guard index >= 0, index < paragraphs.count else { return false }
-    let paragraph = paragraphs[index]
-    guard paragraph.length > 0,
-          contentText(of: paragraph) == text,
-          blockOf(paragraph).kind == fromBlock.kind else { return false }
+    let targets: [(paragraph: NSRange, block: MemoBlock)?] = changes.map { change in
+      guard let from = MemoBlock(rawValue: change.from),
+            let to = MemoBlock(rawValue: change.to),
+            change.index >= 0, change.index < paragraphs.count else { return nil }
+      let paragraph = paragraphs[change.index]
+      guard paragraph.length > 0,
+            contentText(of: paragraph) == change.text,
+            blockOf(paragraph).kind == from.kind else { return nil }
+      return (paragraph, to)
+    }
+    let applied = targets.map { $0 != nil }
+    guard applied.contains(true) else { return applied }
 
     endKeyboardComposition()
     let selection = textView.selectedRange
     let offset = textView.contentOffset
     storage.beginEditing()
-    setBlock(toBlock, for: paragraph)
+    for case let target? in targets {
+      setBlock(target.block, for: target.paragraph)
+    }
     storage.endEditing()
     textView.selectedRange = selection
     textView.contentOffset = offset
     structureDidChange()
-    return true
+    return applied
+  }
+
+  func undo() {
+    guard canUndo else { return }
+    restoreHistory(at: historyIndex - 1)
+  }
+
+  func redo() {
+    guard canRedo else { return }
+    restoreHistory(at: historyIndex + 1)
+  }
+
+  /// 기록의 index번째 문서로 돌아간다. 글자가 바뀌었으면 바뀐 곳으로 커서를 옮기고,
+  /// 서식만 바뀌었으면(할 일로 바꾼 것을 되돌릴 때) 커서와 스크롤을 그대로 둔다. 포커스는 건드리지 않는다.
+  private func restoreHistory(at index: Int) {
+    guard let parsed = MemoDocument.deserialize(history[index], theme: theme) else { return }
+    endKeyboardComposition()
+    let before = string.copy() as! NSString
+    let selection = textView.selectedRange
+    let offset = textView.contentOffset
+    historyIndex = index
+    typingStepOpen = false
+    // 되돌아온 문단을 고친 문단으로 치면 커서가 떠날 때 할 일로 다시 바뀐다.
+    activeParagraph = nil
+    pendingStamp = nil
+    pendingContinuation = nil
+
+    textView.inputDelegate?.textWillChange(textView)
+    storage.setAttributedString(parsed.text)
+    textView.inputDelegate?.textDidChange(textView)
+    trailingBlock = parsed.trailingBlock
+    editedRange = nil
+
+    if before.isEqual(to: string as String) {
+      let location = min(selection.location, storage.length)
+      textView.selectedRange = NSRange(location: location, length: min(selection.length, storage.length - location))
+      textView.contentOffset = offset
+    } else {
+      let changed = changedRange(from: before, to: string)
+      textView.selectedRange = NSRange(location: NSMaxRange(changed), length: 0)
+      textView.scrollRangeToVisible(changed)
+    }
+    syncTypingAttributes()
+    refreshDecorations()
+    let content = MemoDocument.serialize(storage, trailingBlock: trailingBlock)
+    lastContent = content
+    onChangeContent(["content": content, "fromHistory": true])
+    emitFormat()
+    emitHistory()
+    if textView.isFirstResponder {
+      trackActiveParagraph(edited: false)
+    }
   }
 
   @objc private func handleCheckboxTap(_ gesture: UITapGestureRecognizer) {
@@ -233,6 +348,7 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
 
   func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
     let string = self.string
+    pendingEditKind = editKind(replacing: range, with: text)
 
     if text == "\n" && range.length == 0 {
       let paragraph = string.memoParagraph(at: range.location)
@@ -280,6 +396,8 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
   }
 
   func textViewDidChange(_ textView: UITextView) {
+    let kind = pendingEditKind
+    pendingEditKind = .typing
     if let stamp = pendingStamp {
       pendingStamp = nil
       let changed = changedRange(from: stamp.before, to: string)
@@ -295,7 +413,7 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
     normalizeEditedParagraphs()
     syncTypingAttributes()
     refreshDecorations()
-    emitContentIfChanged()
+    emitContentIfChanged(kind)
     emitFormat()
     trackActiveParagraph(edited: true)
   }
@@ -344,6 +462,15 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
     }
     textView.inputDelegate?.selectionWillChange(textView)
     textView.inputDelegate?.selectionDidChange(textView)
+  }
+
+  /// 글자가 하나씩 늘거나 주는 편집(한글 조합 포함)은 타이핑, 줄 바꿈은 새 단계,
+  /// 여러 글자가 한꺼번에 늘거나 주는 편집(붙여넣기, 선택 지우기)은 따로 되돌린다.
+  private func editKind(replacing range: NSRange, with text: String) -> EditKind {
+    if text == "\n" && range.length == 0 { return .newline }
+    if text.contains("\n") { return .command }
+    let grown = text.count - string.substring(with: range).count
+    return abs(grown) > 1 ? .command : .typing
   }
 
   /// 편집 전후 문자열을 비교해 새 문자열에서 바뀐 구간을 구한다.
@@ -521,11 +648,42 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
     }
   }
 
-  private func emitContentIfChanged() {
+  private func emitContentIfChanged(_ kind: EditKind = .command) {
     let content = MemoDocument.serialize(storage, trailingBlock: trailingBlock)
     guard content != lastContent else { return }
     lastContent = content
-    onChangeContent(["content": content])
+    record(content, kind: kind)
+    onChangeContent(["content": content, "fromHistory": false])
+  }
+
+  /// 바뀐 문서를 되돌리기 기록에 남긴다. 되돌린 뒤 새로 고치면 다시 하기 기록은 버린다.
+  private func record(_ content: String, kind: EditKind) {
+    let now = CACurrentMediaTime()
+    guard !history.isEmpty else {
+      history = [content]
+      historyIndex = 0
+      return
+    }
+    history.removeSubrange((historyIndex + 1)...)
+    if kind == .typing && typingStepOpen && now - lastTypingAt < Self.typingPause {
+      history[historyIndex] = content
+    } else {
+      history.append(content)
+      if history.count > Self.historyLimit {
+        history.removeFirst(history.count - Self.historyLimit)
+      }
+      historyIndex = history.count - 1
+    }
+    typingStepOpen = kind != .command
+    lastTypingAt = now
+    emitHistory()
+  }
+
+  private func emitHistory() {
+    let state = (canUndo: canUndo, canRedo: canRedo)
+    if let last = lastHistoryState, last == state { return }
+    lastHistoryState = state
+    onChangeHistory(["canUndo": state.canUndo, "canRedo": state.canRedo])
   }
 
   private func emitFormat() {
@@ -621,6 +779,58 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
       label.draw(at: CGPoint(x: right - size.width, y: centerY - size.height / 2), withAttributes: attributes)
     case .paragraph:
       break
+    }
+  }
+}
+
+/// 내비게이션의 뒤로 가기 스와이프(가장자리, iOS 26부터는 화면 어디서든)에서 손을 떼
+/// 넘어가기로 정해지는 순간 울린다. 전환이 끝난 뒤에 울리면 한 박자 늦게 느껴진다.
+final class SwipeBackHaptics: NSObject {
+  private weak var screen: UIViewController?
+  private weak var navigationController: UINavigationController?
+  private var recognizers: [UIGestureRecognizer] = []
+  private let generator = UIImpactFeedbackGenerator(style: .light)
+
+  func attach(to screen: UIViewController) {
+    guard let navigationController = screen.navigationController else { return }
+    if self.screen === screen && self.navigationController === navigationController { return }
+    detach()
+    self.screen = screen
+    self.navigationController = navigationController
+    var recognizers = [navigationController.interactivePopGestureRecognizer].compactMap { $0 }
+    if #available(iOS 26.0, *), let content = navigationController.interactiveContentPopGestureRecognizer {
+      recognizers.append(content)
+    }
+    for recognizer in recognizers {
+      recognizer.addTarget(self, action: #selector(handle(_:)))
+    }
+    self.recognizers = recognizers
+  }
+
+  // 제스처는 target을 붙잡아 두지 않으므로 사라지기 전에 반드시 떼어 낸다.
+  func detach() {
+    for recognizer in recognizers {
+      recognizer.removeTarget(self, action: #selector(handle(_:)))
+    }
+    recognizers = []
+    screen = nil
+    navigationController = nil
+  }
+
+  deinit {
+    detach()
+  }
+
+  // UIKit이 먼저 같은 제스처로 뒤로 가기 전환을 시작하므로, began 시점에는 전환 정보가 있다.
+  @objc private func handle(_ recognizer: UIGestureRecognizer) {
+    guard recognizer.state == .began,
+          let coordinator = navigationController?.transitionCoordinator,
+          coordinator.viewController(forKey: .from) === screen else { return }
+    generator.prepare()
+    coordinator.notifyWhenInteractionChanges { [weak self] context in
+      if !context.isCancelled {
+        self?.generator.impactOccurred()
+      }
     }
   }
 }

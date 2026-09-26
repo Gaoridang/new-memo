@@ -3,6 +3,7 @@ package expo.modules.memoeditor
 import android.content.Context
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
+import android.os.SystemClock
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
@@ -17,13 +18,30 @@ import android.widget.TextView
 import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.viewevent.EventDispatcher
 import expo.modules.kotlin.views.ExpoView
+import kotlin.math.abs
 import kotlin.math.roundToInt
+
+private const val TYPING_PAUSE_MS = 1000L
+private const val HISTORY_LIMIT = 100
+
+/** 되돌리기 단계를 나누는 기준 */
+private enum class EditKind {
+  /** 한 글자 치기·지우기와 조합 중인 글자 바꾸기. 잠깐 멈추기 전까지 한 단계로 합친다. */
+  TYPING,
+
+  /** 줄 바꿈. 새 단계를 열고 이어서 치는 글자를 합친다. */
+  NEWLINE,
+
+  /** 붙여넣기, 서식, 목록, 체크처럼 따로 되돌리는 편집 */
+  COMMAND
+}
 
 class MemoEditorView(context: Context, appContext: AppContext) :
   ExpoView(context, appContext), MemoEditTextListener {
 
   private val onChangeContent by EventDispatcher()
   private val onChangeFormat by EventDispatcher()
+  private val onChangeHistory by EventDispatcher()
   private val onFocusChange by EventDispatcher()
   private val onLeaveParagraph by EventDispatcher()
 
@@ -69,6 +87,20 @@ class MemoEditorView(context: Context, appContext: AppContext) :
   private data class ActiveParagraph(val index: Int, val text: String, val edited: Boolean)
   private var activeParagraph: ActiveParagraph? = null
 
+  /** 되돌리기 기록. 단계마다 문서 전체(저장 형식 JSON)를 남기고, historyIndex가 지금 문서다. */
+  private val history = mutableListOf<String>()
+  private var historyIndex = 0
+  /** 마지막 단계가 타이핑이면 잠깐 멈추기 전까지 이어지는 타이핑을 그 단계에 합친다. */
+  private var typingStepOpen = false
+  private var lastTypingAt = 0L
+  private var changeKind = EditKind.TYPING
+  private var lastHistoryState: Pair<Boolean, Boolean>? = null
+
+  private val canUndo: Boolean
+    get() = historyIndex > 0
+  private val canRedo: Boolean
+    get() = historyIndex < history.size - 1
+
   private val inputMethodManager: InputMethodManager
     get() = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
 
@@ -89,6 +121,7 @@ class MemoEditorView(context: Context, appContext: AppContext) :
       changeStart = start
       changeBefore = before
       changeCount = count
+      changeKind = editKind(s.subSequence(start, start + count), count - before)
     }
 
     override fun afterTextChanged(s: Editable) {
@@ -99,7 +132,7 @@ class MemoEditorView(context: Context, appContext: AppContext) :
       } finally {
         applying = false
       }
-      emitContentIfChanged()
+      emitContentIfChanged(changeKind)
       emitFormat()
       if (editText.isFocused) trackActiveParagraph(edited = true)
     }
@@ -215,8 +248,14 @@ class MemoEditorView(context: Context, appContext: AppContext) :
     } finally {
       applying = false
     }
-    lastContent = editText.text?.let { MemoDocument.serialize(it) }
+    val content = editText.text?.let { MemoDocument.serialize(it) }
+    lastContent = content
+    history.clear()
+    content?.let { history.add(it) }
+    historyIndex = 0
+    typingStepOpen = false
     emitFormat()
+    emitHistory()
   }
 
   // endregion
@@ -319,19 +358,28 @@ class MemoEditorView(context: Context, appContext: AppContext) :
     emitFormat()
   }
 
-  /** index번째 문단의 내용이 expected이고 종류가 from일 때만 to로 바꾼다. 커서와 스크롤은 그대로 둔다. */
-  fun setParagraphBlock(index: Int, expected: String, from: String, to: String): Boolean {
-    val text = editText.text ?: return false
+  /**
+   * 문단마다 내용이 text이고 종류가 from일 때만 to로 바꾼다. 한 번에 바꾼 것은 되돌리기 한 번으로 돌아간다.
+   * 커서와 스크롤은 그대로 둔다. 바꾼 문단마다 true를 돌려준다.
+   */
+  fun setParagraphBlocks(changes: List<ParagraphBlockChange>): List<Boolean> {
+    val text = editText.text ?: return changes.map { false }
     val paragraphs = MemoDocument.paragraphs(text)
-    if (index < 0 || index >= paragraphs.size) return false
-    val paragraph = paragraphs[index]
-    if (paragraph.isEmpty || contentText(text, paragraph) != expected) return false
-    if (MemoDocument.blockOf(text, paragraph).kind != MemoBlock.fromRaw(from).kind) return false
+    val targets = changes.map { change ->
+      paragraphs.getOrNull(change.index)?.takeIf {
+        !it.isEmpty && contentText(text, it) == change.text &&
+          MemoDocument.blockOf(text, it).kind == MemoBlock.fromRaw(change.from).kind
+      }
+    }
+    val applied = targets.map { it != null }
+    if (true !in applied) return applied
 
     endComposition()
     applying = true
     try {
-      MemoDocument.setBlock(text, paragraph, MemoBlock.fromRaw(to), theme)
+      for ((index, paragraph) in targets.withIndex()) {
+        if (paragraph != null) MemoDocument.setBlock(text, paragraph, MemoBlock.fromRaw(changes[index].to), theme)
+      }
       MemoDocument.normalize(text, theme)
     } finally {
       applying = false
@@ -339,7 +387,52 @@ class MemoEditorView(context: Context, appContext: AppContext) :
     editText.invalidate()
     emitContentIfChanged()
     emitFormat()
-    return true
+    return applied
+  }
+
+  override fun undo() {
+    if (canUndo) restoreHistory(historyIndex - 1)
+  }
+
+  override fun redo() {
+    if (canRedo) restoreHistory(historyIndex + 1)
+  }
+
+  /**
+   * 기록의 index번째 문서로 돌아간다. 글자가 바뀌었으면 바뀐 곳으로 커서를 옮기고,
+   * 서식만 바뀌었으면(할 일로 바꾼 것을 되돌릴 때) 커서를 그대로 둔다. 포커스는 건드리지 않는다.
+   */
+  private fun restoreHistory(index: Int) {
+    val text = editText.text ?: return
+    endComposition()
+    val before = text.toString()
+    val selectionStart = editText.selectionStart
+    val selectionEnd = editText.selectionEnd
+    historyIndex = index
+    typingStepOpen = false
+    // 되돌아온 문단을 고친 문단으로 치면 커서가 떠날 때 할 일로 다시 바뀐다.
+    activeParagraph = null
+
+    applying = true
+    try {
+      text.replace(0, text.length, MemoDocument.deserialize(history[index], theme))
+    } finally {
+      applying = false
+    }
+    val after = text.toString()
+    if (after == before) {
+      editText.setSelection(selectionStart.coerceIn(0, text.length), selectionEnd.coerceIn(0, text.length))
+    } else {
+      editText.setSelection(changedEnd(before, after))
+    }
+    // 입력기가 들고 있는 앞뒤 글자를 새 문서로 맞춘다.
+    if (editText.isFocused) inputMethodManager.restartInput(editText)
+    editText.invalidate()
+    val content = MemoDocument.serialize(text)
+    lastContent = content
+    onChangeContent(mapOf("content" to content, "fromHistory" to true))
+    emitFormat()
+    emitHistory()
   }
 
   private fun applyBlock(text: Editable, paragraph: Paragraph, block: MemoBlock) {
@@ -428,6 +521,28 @@ class MemoEditorView(context: Context, appContext: AppContext) :
     if (BaseInputConnection.getComposingSpanStart(text) == -1) return
     BaseInputConnection.removeComposingSpans(text)
     inputMethodManager.restartInput(editText)
+  }
+
+  /**
+   * 글자가 하나씩 늘거나 주는 편집(조합 중인 글자 바꾸기 포함)은 타이핑, 줄 바꿈은 새 단계,
+   * 여러 글자가 한꺼번에 늘거나 주는 편집(붙여넣기, 선택 지우기)은 따로 되돌린다.
+   */
+  private fun editKind(inserted: CharSequence, grown: Int): EditKind = when {
+    inserted.contains('\n') -> if (inserted.length == 1 && grown == 1) EditKind.NEWLINE else EditKind.COMMAND
+    abs(grown) > 1 -> EditKind.COMMAND
+    else -> EditKind.TYPING
+  }
+
+  /** 편집 전후 글을 비교해 바뀐 부분이 새 글에서 끝나는 자리 */
+  private fun changedEnd(before: String, after: String): Int {
+    val shorter = minOf(before.length, after.length)
+    var prefix = 0
+    while (prefix < shorter && before[prefix] == after[prefix]) prefix++
+    var suffix = 0
+    while (suffix < shorter - prefix && before[before.length - 1 - suffix] == after[after.length - 1 - suffix]) {
+      suffix++
+    }
+    return after.length - suffix
   }
 
   private fun contentText(text: CharSequence, paragraph: Paragraph): String =
@@ -569,12 +684,41 @@ class MemoEditorView(context: Context, appContext: AppContext) :
 
   // region Events
 
-  private fun emitContentIfChanged() {
+  private fun emitContentIfChanged(kind: EditKind = EditKind.COMMAND) {
     val text = editText.text ?: return
     val content = MemoDocument.serialize(text)
     if (content == lastContent) return
     lastContent = content
-    onChangeContent(mapOf("content" to content))
+    record(content, kind)
+    onChangeContent(mapOf("content" to content, "fromHistory" to false))
+  }
+
+  /** 바뀐 문서를 되돌리기 기록에 남긴다. 되돌린 뒤 새로 고치면 다시 하기 기록은 버린다. */
+  private fun record(content: String, kind: EditKind) {
+    val now = SystemClock.uptimeMillis()
+    if (history.isEmpty()) {
+      history.add(content)
+      historyIndex = 0
+      return
+    }
+    history.subList(historyIndex + 1, history.size).clear()
+    if (kind == EditKind.TYPING && typingStepOpen && now - lastTypingAt < TYPING_PAUSE_MS) {
+      history[historyIndex] = content
+    } else {
+      history.add(content)
+      while (history.size > HISTORY_LIMIT) history.removeAt(0)
+      historyIndex = history.lastIndex
+    }
+    typingStepOpen = kind != EditKind.COMMAND
+    lastTypingAt = now
+    emitHistory()
+  }
+
+  private fun emitHistory() {
+    val state = canUndo to canRedo
+    if (state == lastHistoryState) return
+    lastHistoryState = state
+    onChangeHistory(mapOf("canUndo" to canUndo, "canRedo" to canRedo))
   }
 
   private fun emitFormat() {

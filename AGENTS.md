@@ -28,7 +28,10 @@ Run lint and typecheck before declaring any task done.
 - Use **Expo Router** for all navigation (`main` is `expo-router/entry`). Routes live in `src/app/` — every file there is a screen, `_layout.tsx` defines the root Stack. Keep non-route code (components, hooks, storage) in `src/` outside `src/app/`.
   - `src/app/index.tsx` — memo list (stack root; on app start it pushes the most recent memo once)
   - `src/app/memo/[id].tsx` — editor for one memo; the header list button is `router.back()`
-  - `src/app/api/todo+api.ts` — server route (API route, `web.output: "server"`) that asks Jev (TypeSafe AI) whether a line is a to-do. Needs `TYPESAFE_API_KEY` in `.env.local` (server-only; never `EXPO_PUBLIC_`). Restart `expo start` after changing it.
+  - `src/app/api/*+api.ts` — server routes (API routes, `web.output: "server"`) that ask Jev (TypeSafe AI). Shared call helper and date logic live in `src/server/` (imported only by API routes). Needs `TYPESAFE_API_KEY` in `.env.local` (server-only; never `EXPO_PUBLIC_`). Restart `expo start` after changing it.
+    - `todo+api.ts` — is a line a to-do (auto-convert / suggest only) and its due date
+    - `structure+api.ts` — list/step/to-do shape of each pasted line
+    - `search+api.ts` — which memo line answers a question
 - Import `router`, `Stack`, and `useLocalSearchParams` from `expo-router`. Docs: https://docs.expo.dev/router/introduction.md
 
 ## Building with EAS

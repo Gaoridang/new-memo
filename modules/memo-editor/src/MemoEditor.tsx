@@ -1,4 +1,3 @@
-import { requireNativeView } from 'expo';
 import type { Ref } from 'react';
 import type { ColorValue, NativeSyntheticEvent, ViewProps } from 'react-native';
 
@@ -12,6 +11,11 @@ export type MemoFormatState = {
   block: MemoBlockKind;
 };
 
+export type MemoHistoryState = { canUndo: boolean; canRedo: boolean };
+
+/** index번째 문단의 내용이 text이고 종류가 from이면 to로 바꾼다. */
+export type MemoParagraphBlockChange = { index: number; text: string; from: MemoBlockKind; to: MemoBlockKind };
+
 export type MemoEditorHandle = {
   focus(): Promise<void>;
   blur(): Promise<void>;
@@ -20,11 +24,17 @@ export type MemoEditorHandle = {
   toggleStrikethrough(): Promise<void>;
   toggleBlock(kind: MemoListKind): Promise<void>;
   /**
-   * index번째 문단의 내용이 text이고 종류가 from일 때만 to로 바꾼다.
-   * 그 사이 사용자가 문단을 고쳤으면 아무것도 하지 않고 false를 돌려준다.
+   * 문단 종류를 한꺼번에 바꾼다. 한 번에 바꾼 것은 되돌리기 한 번으로 돌아간다.
+   * 그 사이 사용자가 고친 문단은 건너뛴다. 바꾼 문단마다 true를 돌려준다.
    */
-  setParagraphBlock(index: number, text: string, from: MemoBlockKind, to: MemoBlockKind): Promise<boolean>;
+  setParagraphBlocks(changes: MemoParagraphBlockChange[]): Promise<boolean[]>;
+  /** 타이핑, 서식, 할 일로 바꾸기를 모두 한 기록으로 되돌린다. 포커스는 건드리지 않는다. */
+  undo(): Promise<void>;
+  redo(): Promise<void>;
 };
+
+/** fromHistory는 되돌리기·다시 하기로 바뀐 경우 */
+export type MemoChangeContentEvent = { content: string; fromHistory: boolean };
 
 /** 고친 일반 문단에서 커서가 떠났을 때 (줄 바꿈, 다른 줄로 이동, 포커스 해제) */
 export type MemoLeaveParagraphEvent = { index: number; text: string };
@@ -42,10 +52,15 @@ export type MemoEditorProps = ViewProps & {
   placeholderColor?: ColorValue;
   insetHorizontal?: number;
   insetTop?: number;
-  onChangeContent?: (event: NativeSyntheticEvent<{ content: string }>) => void;
+  /** iOS: 키보드 위에 붙일 InputAccessoryView의 nativeID (Android는 무시한다) */
+  accessoryID?: string;
+  /** iOS: 이 화면을 밀어 뒤로 갈 때 손을 떼 넘어가기로 정해지는 순간 햅틱을 울린다. */
+  swipeBackHaptic?: boolean;
+  onChangeContent?: (event: NativeSyntheticEvent<MemoChangeContentEvent>) => void;
   onChangeFormat?: (event: NativeSyntheticEvent<MemoFormatState>) => void;
+  onChangeHistory?: (event: NativeSyntheticEvent<MemoHistoryState>) => void;
   onFocusChange?: (event: NativeSyntheticEvent<{ focused: boolean }>) => void;
   onLeaveParagraph?: (event: NativeSyntheticEvent<MemoLeaveParagraphEvent>) => void;
 };
 
-export const MemoEditor = requireNativeView<MemoEditorProps>('MemoEditor');
+export { MemoEditor } from './MemoEditorView';

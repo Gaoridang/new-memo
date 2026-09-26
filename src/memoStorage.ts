@@ -5,6 +5,8 @@ export type Memo = {
   title: string;
   // 에디터 문서(JSON 문자열). 형식은 modules/memo-editor/ios/MemoDocument.swift 참고
   content: string;
+  // 할 일 줄(글자 그대로) → 마감일 'YYYY-MM-DD'. 할 일 자동 감지가 줄에서 읽어 채운다.
+  dues: Record<string, string>;
   updatedAt: number;
 };
 
@@ -31,11 +33,21 @@ function parseMemo(file: File, id: string): Memo | null {
       id,
       title: typeof data.title === 'string' ? data.title : '',
       content: typeof data.content === 'string' ? data.content : '',
+      dues: parseDues(data.dues),
       updatedAt: typeof data.updatedAt === 'number' ? data.updatedAt : 0,
     };
   } catch {
     return null;
   }
+}
+
+function parseDues(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object') return {};
+  return Object.fromEntries(
+    Object.entries(value).filter(
+      (entry): entry is [string, string] => typeof entry[1] === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(entry[1]),
+    ),
+  );
 }
 
 // 목록 화면이 저장·삭제를 바로 반영하도록 알린다. (뒤로 스와이프로 편집 화면을 닫으면
@@ -68,7 +80,7 @@ export function newMemoId() {
 }
 
 export function createMemo(): Memo {
-  return { id: newMemoId(), title: '', content: '', updatedAt: Date.now() };
+  return { id: newMemoId(), title: '', content: '', dues: {}, updatedAt: Date.now() };
 }
 
 function migrateLegacyMemo() {
@@ -132,18 +144,44 @@ export function deleteMemo(id: string) {
   }
 }
 
-type DocumentBlock = { runs?: { text?: unknown }[] };
+export type MemoBlock = { type: string; checked: boolean; text: string };
+
+type DocumentBlock = { type?: unknown; checked?: unknown; runs?: { text?: unknown }[] };
+
+// 에디터 문서의 문단들. 서식은 빼고 글자와 문단 종류만 남긴다.
+export function memoBlocks(content: string): MemoBlock[] {
+  if (!content) return [];
+  try {
+    const blocks: DocumentBlock[] = JSON.parse(content).blocks ?? [];
+    return blocks.map((block) => ({
+      type: typeof block.type === 'string' ? block.type : 'paragraph',
+      checked: block.checked === true,
+      text: (block.runs ?? []).map((run) => (typeof run.text === 'string' ? run.text : '')).join(''),
+    }));
+  } catch {
+    return [];
+  }
+}
 
 // 에디터 문서에서 서식을 뺀 본문 텍스트 (문단은 줄바꿈으로 잇는다)
 export function memoPreview(content: string): string {
-  if (!content) return '';
-  try {
-    const blocks: DocumentBlock[] = JSON.parse(content).blocks ?? [];
-    return blocks
-      .map((block) => (block.runs ?? []).map((run) => (typeof run.text === 'string' ? run.text : '')).join(''))
-      .join('\n')
-      .trim();
-  } catch {
-    return '';
+  return memoBlocks(content)
+    .map((block) => block.text)
+    .join('\n')
+    .trim();
+}
+
+export type UpcomingTodo = { memo: Memo; text: string; due: string };
+
+// 아직 끝내지 않은 할 일 가운데 마감일이 있는 것, 마감이 가까운 순
+export function upcomingTodos(memos: Memo[]): UpcomingTodo[] {
+  const todos: UpcomingTodo[] = [];
+  for (const memo of memos) {
+    for (const block of memoBlocks(memo.content)) {
+      const text = block.text.trim();
+      const due = memo.dues[text];
+      if (due && block.type === 'checkbox' && !block.checked) todos.push({ memo, text, due });
+    }
   }
+  return todos.sort((a, b) => a.due.localeCompare(b.due));
 }
