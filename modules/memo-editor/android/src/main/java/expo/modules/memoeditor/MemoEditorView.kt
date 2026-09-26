@@ -3,7 +3,6 @@ package expo.modules.memoeditor
 import android.content.Context
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
-import android.os.SystemClock
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
@@ -21,19 +20,95 @@ import expo.modules.kotlin.views.ExpoView
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
-private const val TYPING_PAUSE_MS = 1000L
-private const val HISTORY_LIMIT = 100
+private const val HISTORY_LIMIT = 500
 
-/** 되돌리기 단계를 나누는 기준 */
+/** 되돌리기 한 단계에 담기는 편집의 종류 */
 private enum class EditKind {
-  /** 한 글자 치기·지우기와 조합 중인 글자 바꾸기. 잠깐 멈추기 전까지 한 단계로 합친다. */
+  /** 글자 치기(한글 조합 포함). 낱말 하나를 한 단계로 묶는다. */
   TYPING,
 
-  /** 줄 바꿈. 새 단계를 열고 이어서 치는 글자를 합친다. */
+  /** 한 글자씩 지우기. 이어서 지우는 동안 한 단계로 묶는다. */
+  DELETING,
+
+  /** 줄 바꿈. 한 단계를 따로 차지한다. */
   NEWLINE,
 
-  /** 붙여넣기, 서식, 목록, 체크처럼 따로 되돌리는 편집 */
+  /** 붙여넣기, 서식, 목록, 체크, 자동 변환처럼 따로 되돌리는 편집 */
   COMMAND
+}
+
+/**
+ * 사용자가 한 번에 고친 글자. 위치는 편집 전 글 기준이다. (start 앞 글자는 편집 전후가 같다)
+ * 글자가 하나씩 늘거나 주는 편집(조합 중인 글자 바꾸기 포함)은 치기·지우기, 줄 바꿈은 따로,
+ * 여러 글자가 한꺼번에 늘거나 주는 편집(붙여넣기, 선택 지우기, 자동 고침)은 명령으로 본다.
+ */
+private class TextEdit(text: CharSequence, val start: Int, removed: CharSequence, inserted: CharSequence) {
+  val removedLength = removed.length
+  val insertedLength = inserted.length
+  val kind = when {
+    removed.isEmpty() && inserted.length == 1 && inserted[0] == '\n' -> EditKind.NEWLINE
+    inserted.contains('\n') || abs(codePoints(inserted) - codePoints(removed)) > 1 -> EditKind.COMMAND
+    inserted.isEmpty() -> EditKind.DELETING
+    else -> EditKind.TYPING
+  }
+
+  /** 공백이 아닌 글자가 들어가는 편집 */
+  val insertsWordCharacters = inserted.any { !it.isWhitespace() }
+
+  /** 띄어 쓴 뒤 새 낱말을 쓰기 시작하는 편집 */
+  val startsWord = removed.isEmpty() && inserted.isNotEmpty() && !inserted[0].isWhitespace() &&
+    (start == 0 || text[start - 1].isWhitespace())
+
+  private fun codePoints(chars: CharSequence) = Character.codePointCount(chars, 0, chars.length)
+}
+
+/** 이어 쓰는 중인 되돌리기 단계. 위치는 지금 글 기준이다. */
+private class OpenStep(
+  val kind: EditKind,
+  var start: Int,
+  var end: Int,
+  var hasWordCharacters: Boolean
+) {
+  /** 방금 쓰던 자리에 바로 이어지는 편집인가 */
+  fun continues(edit: TextEdit): Boolean {
+    val editEnd = edit.start + edit.removedLength
+    return when {
+      // 쓰던 낱말 안이나 끝에서 이어 쓴다. (한글 조합은 앞 글자를 바꿔 치운다) 띄어 쓴 뒤 새 낱말은 새 단계다.
+      kind == EditKind.TYPING && edit.kind == EditKind.TYPING ->
+        edit.start <= end && editEnd >= start && editEnd <= end && !(edit.startsWord && hasWordCharacters)
+      // 방금 친 글자를 지우는 것은 고쳐 쓰는 중이다.
+      kind == EditKind.TYPING && edit.kind == EditKind.DELETING -> edit.start >= start && editEnd <= end
+      // 앞으로(백스페이스) 또는 뒤로 이어 지운다.
+      kind == EditKind.DELETING && edit.kind == EditKind.DELETING -> editEnd == start || edit.start == start
+      else -> false
+    }
+  }
+
+  fun apply(edit: TextEdit) {
+    if (kind == EditKind.TYPING) {
+      start = minOf(start, edit.start)
+      end += edit.insertedLength - edit.removedLength
+      hasWordCharacters = hasWordCharacters || edit.insertsWordCharacters
+    } else {
+      start = edit.start
+      end = start
+    }
+  }
+
+  /** 편집한 문단 앞의 자리 표시 문자를 넣거나 빼 글이 밀렸으면 그만큼 옮긴다. */
+  fun shift(by: Int) {
+    start = (start + by).coerceAtLeast(0)
+    end = (end + by).coerceAtLeast(start)
+  }
+
+  companion object {
+    /** 치기나 지우기만 다음 편집을 이어 받는다. 줄 바꿈과 명령은 단계를 바로 닫는다. */
+    fun begin(edit: TextEdit): OpenStep? = when (edit.kind) {
+      EditKind.TYPING -> OpenStep(EditKind.TYPING, edit.start, edit.start + edit.insertedLength, edit.insertsWordCharacters)
+      EditKind.DELETING -> OpenStep(EditKind.DELETING, edit.start, edit.start, false)
+      else -> null
+    }
+  }
 }
 
 class MemoEditorView(context: Context, appContext: AppContext) :
@@ -80,6 +155,9 @@ class MemoEditorView(context: Context, appContext: AppContext) :
   private var changeStart = 0
   private var changeBefore = 0
   private var changeCount = 0
+  private var changeRemoved: CharSequence = ""
+  private var changeLengthBefore = 0
+  private var changeEdit: TextEdit? = null
   private var lastContent: String? = null
   private var lastFormat: Pair<InlineFlags, MemoBlock>? = null
 
@@ -87,13 +165,14 @@ class MemoEditorView(context: Context, appContext: AppContext) :
   private data class ActiveParagraph(val index: Int, val text: String, val edited: Boolean)
   private var activeParagraph: ActiveParagraph? = null
 
-  /** 되돌리기 기록. 단계마다 문서 전체(저장 형식 JSON)를 남기고, historyIndex가 지금 문서다. */
+  /**
+   * 되돌리기 기록. 단계마다 문서 전체(저장 형식 JSON)를 남기고, historyIndex가 지금 문서다.
+   * 낱말 하나, 이어 지운 글자들, 줄 바꿈, 명령 하나가 각각 한 단계다.
+   */
   private val history = mutableListOf<String>()
   private var historyIndex = 0
-  /** 마지막 단계가 타이핑이면 잠깐 멈추기 전까지 이어지는 타이핑을 그 단계에 합친다. */
-  private var typingStepOpen = false
-  private var lastTypingAt = 0L
-  private var changeKind = EditKind.TYPING
+  /** 마지막 단계가 아직 이어 쓰는 중이면 그 범위 */
+  private var openStep: OpenStep? = null
   private var lastHistoryState: Pair<Boolean, Boolean>? = null
 
   private val canUndo: Boolean
@@ -114,6 +193,8 @@ class MemoEditorView(context: Context, appContext: AppContext) :
         pendingInline != null && pendingPosition == start -> pendingInline
         else -> insertionFlags(start)
       }
+      changeRemoved = s.subSequence(start, start + count).toString()
+      changeLengthBefore = s.length
     }
 
     override fun onTextChanged(s: CharSequence, start: Int, before: Int, count: Int) {
@@ -121,18 +202,21 @@ class MemoEditorView(context: Context, appContext: AppContext) :
       changeStart = start
       changeBefore = before
       changeCount = count
-      changeKind = editKind(s.subSequence(start, start + count), count - before)
+      changeEdit = TextEdit(s, start, changeRemoved, s.subSequence(start, start + count))
     }
 
     override fun afterTextChanged(s: Editable) {
       if (applying) return
+      val expectedLength = changeLengthBefore - changeBefore + changeCount
       applying = true
       try {
         handleTextChange(s)
       } finally {
         applying = false
       }
-      emitContentIfChanged(changeKind)
+      val edit = changeEdit
+      changeEdit = null
+      emitContentIfChanged(edit, s.length - expectedLength)
       emitFormat()
       if (editText.isFocused) trackActiveParagraph(edited = true)
     }
@@ -253,7 +337,7 @@ class MemoEditorView(context: Context, appContext: AppContext) :
     history.clear()
     content?.let { history.add(it) }
     historyIndex = 0
-    typingStepOpen = false
+    openStep = null
     emitFormat()
     emitHistory()
   }
@@ -363,6 +447,8 @@ class MemoEditorView(context: Context, appContext: AppContext) :
    * 커서와 스크롤은 그대로 둔다. 바꾼 문단마다 true를 돌려준다.
    */
   fun setParagraphBlocks(changes: List<ParagraphBlockChange>): List<Boolean> {
+    // 되돌린 뒤(다시 하기가 남아 있으면) 자동으로 바꾸지 않는다. 바꾸면 다시 하기 기록이 사라진다.
+    if (canRedo) return changes.map { false }
     val text = editText.text ?: return changes.map { false }
     val paragraphs = MemoDocument.paragraphs(text)
     val targets = changes.map { change ->
@@ -409,7 +495,7 @@ class MemoEditorView(context: Context, appContext: AppContext) :
     val selectionStart = editText.selectionStart
     val selectionEnd = editText.selectionEnd
     historyIndex = index
-    typingStepOpen = false
+    openStep = null
     // 되돌아온 문단을 고친 문단으로 치면 커서가 떠날 때 할 일로 다시 바뀐다.
     activeParagraph = null
 
@@ -521,16 +607,6 @@ class MemoEditorView(context: Context, appContext: AppContext) :
     if (BaseInputConnection.getComposingSpanStart(text) == -1) return
     BaseInputConnection.removeComposingSpans(text)
     inputMethodManager.restartInput(editText)
-  }
-
-  /**
-   * 글자가 하나씩 늘거나 주는 편집(조합 중인 글자 바꾸기 포함)은 타이핑, 줄 바꿈은 새 단계,
-   * 여러 글자가 한꺼번에 늘거나 주는 편집(붙여넣기, 선택 지우기)은 따로 되돌린다.
-   */
-  private fun editKind(inserted: CharSequence, grown: Int): EditKind = when {
-    inserted.contains('\n') -> if (inserted.length == 1 && grown == 1) EditKind.NEWLINE else EditKind.COMMAND
-    abs(grown) > 1 -> EditKind.COMMAND
-    else -> EditKind.TYPING
   }
 
   /** 편집 전후 글을 비교해 바뀐 부분이 새 글에서 끝나는 자리 */
@@ -684,33 +760,47 @@ class MemoEditorView(context: Context, appContext: AppContext) :
 
   // region Events
 
-  private fun emitContentIfChanged(kind: EditKind = EditKind.COMMAND) {
+  /**
+   * edit이 없으면(서식, 목록, 체크, 자동 변환) 명령으로 기록한다.
+   * shift는 편집 뒤 자리 표시 문자를 넣거나 빼 글 길이가 달라진 만큼이다.
+   */
+  private fun emitContentIfChanged(edit: TextEdit? = null, shift: Int = 0) {
     val text = editText.text ?: return
     val content = MemoDocument.serialize(text)
     if (content == lastContent) return
     lastContent = content
-    record(content, kind)
+    record(content, edit, shift)
     onChangeContent(mapOf("content" to content, "fromHistory" to false))
   }
 
-  /** 바뀐 문서를 되돌리기 기록에 남긴다. 되돌린 뒤 새로 고치면 다시 하기 기록은 버린다. */
-  private fun record(content: String, kind: EditKind) {
-    val now = SystemClock.uptimeMillis()
+  /**
+   * 바뀐 문서를 되돌리기 기록에 남긴다. 쓰던 자리에 바로 이어지는 편집은 지금 단계에 합치고,
+   * 아니면 새 단계를 만든다. 되돌린 뒤 새로 고치면 다시 하기 기록은 버린다.
+   */
+  private fun record(content: String, edit: TextEdit?, shift: Int) {
     if (history.isEmpty()) {
       history.add(content)
       historyIndex = 0
       return
     }
     history.subList(historyIndex + 1, history.size).clear()
-    if (kind == EditKind.TYPING && typingStepOpen && now - lastTypingAt < TYPING_PAUSE_MS) {
+    val step = openStep
+    if (edit != null && step != null && step.continues(edit)) {
+      step.apply(edit)
       history[historyIndex] = content
+      if (historyIndex > 0 && history[historyIndex - 1] == content) {
+        // 이 단계에서 친 글자를 모두 지웠으면 아무것도 바꾸지 않는 단계를 남기지 않는다.
+        history.removeAt(historyIndex)
+        historyIndex--
+        openStep = null
+      }
     } else {
       history.add(content)
       while (history.size > HISTORY_LIMIT) history.removeAt(0)
       historyIndex = history.lastIndex
+      openStep = edit?.let { OpenStep.begin(it) }
     }
-    typingStepOpen = kind != EditKind.COMMAND
-    lastTypingAt = now
+    if (shift != 0) openStep?.shift(shift)
     emitHistory()
   }
 

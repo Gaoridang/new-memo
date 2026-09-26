@@ -1,12 +1,12 @@
 import * as Haptics from 'expo-haptics';
 import { Platform } from 'react-native';
 
-/** 밀던 화면이 놓으면 넘어가는 지점을 지날 때 톡 */
-export function swipeTick() {
+/** 밀어서 목록을 열거나 닫기로 정해진 순간 (손을 뗄 때) */
+export function swipeHaptic() {
   if (Platform.OS === 'android') {
-    // Segment_Tick은 Android 14부터라 모든 버전에 있는 Clock_Tick을 쓴다.
+    // 다른 효과는 Android 버전에 따라 없을 수 있어 모든 버전에 있는 Clock_Tick을 쓴다.
     Haptics.performAndroidHapticsAsync(Haptics.AndroidHaptics.Clock_Tick);
   } else {
-    Haptics.selectionAsync();
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   }
 }

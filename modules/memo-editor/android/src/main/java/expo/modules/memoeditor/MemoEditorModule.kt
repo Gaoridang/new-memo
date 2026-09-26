@@ -73,8 +73,6 @@ class MemoEditorModule : Module() {
       }
       // iOS에서 키보드 위에 붙일 컨트롤 바. Android에는 그런 자리가 없어 JS가 키보드를 따라 띄운다.
       Prop("accessoryID") { _: MemoEditorView, _: String? -> }
-      // iOS의 뒤로 가기 스와이프 햅틱. Android는 시스템 뒤로 가기 제스처를 쓴다.
-      Prop("swipeBackHaptic") { _: MemoEditorView, _: Boolean? -> }
 
       OnViewDidUpdateProps { view: MemoEditorView ->
         view.didUpdateProps()

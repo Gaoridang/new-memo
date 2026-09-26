@@ -48,9 +48,6 @@ public class MemoEditorModule: Module {
       Prop("accessoryID") { (view: MemoEditorView, value: String?) in
         view.textView.accessoryID = value
       }
-      Prop("swipeBackHaptic") { (view: MemoEditorView, value: Bool?) in
-        view.swipeBackHaptic = value ?? false
-      }
 
       OnViewDidUpdateProps { (view: MemoEditorView) in
         view.didUpdateProps()

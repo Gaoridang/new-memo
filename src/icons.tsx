@@ -123,16 +123,6 @@ export function RedoIcon({ color, size }: IconProps) {
   );
 }
 
-// 줄이 적힌 종이: 목록에서 밀어 다시 여는 메모
-export function MemoIcon({ color, size }: IconProps) {
-  return (
-    <Icon size={size}>
-      <Rect x={4.25} y={3.25} width={11.5} height={13.5} rx={2.5} {...strokeProps(color)} />
-      <Path d="M7.25 7.5H12.75 M7.25 10.5H12.75 M7.25 13.5H10.5" {...strokeProps(color)} />
-    </Icon>
-  );
-}
-
 export function MemoListIcon({ color, size }: IconProps) {
   return (
     <Icon size={size}>

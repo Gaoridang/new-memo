@@ -17,7 +17,7 @@ import {
   type MemoHistoryState,
 } from '../modules/memo-editor';
 import { BAR_HEIGHT, FormatBar, type FormatKey } from './FormatBar';
-import { BUTTON_ICON_SIZE, MemoListIcon, RedoIcon, UndoIcon } from './icons';
+import { BUTTON_ICON_SIZE, ComposeIcon, MemoListIcon, RedoIcon, UndoIcon } from './icons';
 import { HEADER_HEIGHT, HEADER_PADDING, HeaderButton } from './MemoList';
 import { memoBlocks, type Memo } from './memoStorage';
 import { colors } from './theme';
@@ -59,10 +59,13 @@ type FocusedField = 'title' | 'body' | null;
 type Props = {
   // 처음 한 번만 읽는다. 다른 메모를 열 때는 key를 바꿔 화면을 새로 만든다.
   memo: Memo;
+  // 메모를 밀어 아래의 목록이 드러나 있는지
+  listOpen: boolean;
   onOpenList: () => void;
+  onNewMemo: () => void;
 };
 
-export function MemoScreen({ memo: initialMemo, onOpenList }: Props) {
+export function MemoScreen({ memo: initialMemo, listOpen, onOpenList, onNewMemo }: Props) {
   const insets = useSafeAreaInsets();
   const { update: updateMemo, flush } = useAutosave(initialMemo);
   const titleRef = useRef<TextInput>(null);
@@ -195,12 +198,27 @@ export function MemoScreen({ memo: initialMemo, onOpenList }: Props) {
     onOpenList();
   }, [dismissKeyboard, flush, onOpenList]);
 
+  // 지금 메모를 저장해 두고 빈 메모로 바꾼다. 키보드는 새 메모의 입력칸을 눌러야 올라온다.
+  const newMemo = useCallback(() => {
+    dismissKeyboard();
+    flush();
+    onNewMemo();
+  }, [dismissKeyboard, flush, onNewMemo]);
+
   const focusField = (field: Exclude<FocusedField, null>) => {
     setFocusedField(field);
     setBarField(field);
   };
   const blurField = (field: Exclude<FocusedField, null>) =>
     setFocusedField((current) => (current === field ? null : current));
+
+  // 메모를 밀어 목록을 열어도 목록이 방금 고친 제목·본문을 보여주도록 저장하고 키보드를 내린다.
+  useEffect(() => {
+    if (!listOpen) return;
+    editorRef.current?.blur();
+    titleRef.current?.blur();
+    flush();
+  }, [flush, listOpen]);
 
   const formatBar = (
     <FormatBar
@@ -219,13 +237,16 @@ export function MemoScreen({ memo: initialMemo, onOpenList }: Props) {
         <HeaderButton label="메모 목록" onPress={openList}>
           <MemoListIcon color={colors.icon} size={BUTTON_ICON_SIZE} />
         </HeaderButton>
-        {/* 할 일로 바꾸기는 포커스가 빠질 때도 일어나므로 키보드가 없어도 늘 둔다. */}
         <View style={styles.headerActions}>
+          {/* 할 일로 바꾸기는 포커스가 빠질 때도 일어나므로 되돌리기·다시 하기는 키보드가 없어도 늘 둔다. */}
           <HeaderButton label="되돌리기" disabled={!history.canUndo} onPress={() => editorRef.current?.undo()}>
             <UndoIcon color={history.canUndo ? colors.icon : colors.iconDisabled} size={BUTTON_ICON_SIZE} />
           </HeaderButton>
           <HeaderButton label="다시 하기" disabled={!history.canRedo} onPress={() => editorRef.current?.redo()}>
             <RedoIcon color={history.canRedo ? colors.icon : colors.iconDisabled} size={BUTTON_ICON_SIZE} />
+          </HeaderButton>
+          <HeaderButton label="새 메모" onPress={newMemo}>
+            <ComposeIcon color={colors.accent} size={BUTTON_ICON_SIZE} />
           </HeaderButton>
         </View>
       </View>
@@ -265,7 +286,6 @@ export function MemoScreen({ memo: initialMemo, onOpenList }: Props) {
         insetHorizontal={SIDE_PADDING}
         insetTop={14}
         accessoryID={accessoryID}
-        swipeBackHaptic
         onChangeContent={(event) => {
           const { content, fromHistory } = event.nativeEvent;
           const previous = contentText.current;

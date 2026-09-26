@@ -1,28 +1,29 @@
-import { Stack } from 'expo-router';
+import { Slot } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import { StyleSheet } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
 
+import { MemoDrawer } from '../MemoDrawer';
 import { colors } from '../theme';
 
-// 딥 링크로 메모를 바로 열어도 뒤에는 항상 목록이 있도록 한다.
-export const unstable_settings = {
-  initialRouteName: 'index',
-};
-
+// 메모 한 장을 띄우고, 목록은 메모 아래에 깔아 둔다. (메모를 오른쪽으로 밀면 목록이 나온다)
 export default function RootLayout() {
   return (
-    <KeyboardProvider>
-      <StatusBar style="dark" />
-      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.paper } }}>
-        <Stack.Screen name="index" />
-        <Stack.Screen
-          name="memo/[id]"
-          // 앱을 켤 때 여는 첫 메모는 목록 위로 밀려 들어오지 않고 바로 보이게 한다.
-          options={({ route }) => ({
-            animation: (route.params as { launch?: string } | undefined)?.launch ? 'none' : 'default',
-          })}
-        />
-      </Stack>
-    </KeyboardProvider>
+    <GestureHandlerRootView style={styles.root}>
+      <KeyboardProvider>
+        <StatusBar style="dark" />
+        <MemoDrawer>
+          <Slot />
+        </MemoDrawer>
+      </KeyboardProvider>
+    </GestureHandlerRootView>
   );
 }
+
+const styles = StyleSheet.create({
+  root: {
+    flex: 1,
+    backgroundColor: colors.paper,
+  },
+});

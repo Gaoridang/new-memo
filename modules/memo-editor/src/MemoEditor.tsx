@@ -54,8 +54,6 @@ export type MemoEditorProps = ViewProps & {
   insetTop?: number;
   /** iOS: 키보드 위에 붙일 InputAccessoryView의 nativeID (Android는 무시한다) */
   accessoryID?: string;
-  /** iOS: 이 화면을 밀어 뒤로 갈 때 손을 떼 넘어가기로 정해지는 순간 햅틱을 울린다. */
-  swipeBackHaptic?: boolean;
   onChangeContent?: (event: NativeSyntheticEvent<MemoChangeContentEvent>) => void;
   onChangeFormat?: (event: NativeSyntheticEvent<MemoFormatState>) => void;
   onChangeHistory?: (event: NativeSyntheticEvent<MemoHistoryState>) => void;

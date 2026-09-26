@@ -5,7 +5,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { dueDate, dueRelative } from './dueLabel';
 import { AskIcon, BUTTON_ICON_SIZE, ComposeIcon } from './icons';
 import { memoPreview, upcomingTodos, type Memo } from './memoStorage';
-import { SwipeToReturn } from './SwipeToReturn';
 import { colors } from './theme';
 import { useMemoSearch, type SearchState } from './useMemoSearch';
 
@@ -20,8 +19,8 @@ export const HEADER_PADDING = SIDE_PADDING - (HEADER_BUTTON_SIZE - BUTTON_ICON_S
 
 type Props = {
   memos: Memo[];
-  // 목록을 왼쪽으로 밀면 다시 여는 메모 (방금까지 보던 메모)
-  returnTo?: Memo;
+  // 목록 옆에 펼쳐 둔 메모. 목록에서 표시해 준다.
+  currentId?: string;
   onSelect: (memo: Memo) => void;
   onCreate: () => void;
   onDelete: (memo: Memo) => void;
@@ -50,7 +49,7 @@ function rowText(memo: Memo) {
   return { title: lines[0] ?? '새로운 메모', preview: lines.slice(1).join(' ') };
 }
 
-export function MemoList({ memos, returnTo, onSelect, onCreate, onDelete }: Props) {
+export function MemoList({ memos, currentId, onSelect, onCreate, onDelete }: Props) {
   const insets = useSafeAreaInsets();
   const [query, setQuery] = useState('');
   const { state: searchState, search, clear } = useMemoSearch();
@@ -75,11 +74,7 @@ export function MemoList({ memos, returnTo, onSelect, onCreate, onDelete }: Prop
   };
 
   return (
-    <SwipeToReturn
-      style={[styles.screen, { paddingTop: insets.top }]}
-      label={returnTo && rowText(returnTo).title}
-      onReturn={() => returnTo && onSelect(returnTo)}
-    >
+    <View style={[styles.screen, { paddingTop: insets.top }]}>
       <View style={styles.header}>
         <HeaderButton label="새 메모" onPress={onCreate}>
           <ComposeIcon color={colors.accent} size={BUTTON_ICON_SIZE} />
@@ -155,9 +150,10 @@ export function MemoList({ memos, returnTo, onSelect, onCreate, onDelete }: Prop
             <Pressable
               accessibilityRole="button"
               accessibilityHint="길게 누르면 삭제합니다"
+              accessibilityState={{ selected: item.id === currentId }}
               onPress={() => onSelect(item)}
               onLongPress={() => confirmDelete(item)}
-              style={({ pressed }) => [styles.row, pressed && styles.rowHighlighted]}
+              style={({ pressed }) => [styles.row, (pressed || item.id === currentId) && styles.rowHighlighted]}
             >
               <Text style={styles.rowTitle} numberOfLines={1}>
                 {title}
@@ -170,7 +166,7 @@ export function MemoList({ memos, returnTo, onSelect, onCreate, onDelete }: Prop
           );
         }}
       />
-    </SwipeToReturn>
+    </View>
   );
 }
 
