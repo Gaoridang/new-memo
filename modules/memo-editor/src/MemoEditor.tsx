@@ -84,7 +84,10 @@ export type MemoEditorProps = ViewProps & {
   insetTop?: number;
   /** iOS: 키보드 위에 붙일 InputAccessoryView의 nativeID (Android는 무시한다) */
   accessoryID?: string;
-  /** 두들 그림 세트. 두들이 붙은 낱말은 그림과 함께 칩으로 그린다. */
+  /**
+   * 두들 그림 세트. 두들이 붙은 낱말은 그림과 함께 칩으로 그린다.
+   * 칩 바로 뒤에서 지우면 글자 대신 칩(두들)이 떨어지고, 되돌리기 한 번으로 다시 붙는다.
+   */
   doodleArt?: MemoDoodleArt[];
   onChangeContent?: (event: NativeSyntheticEvent<MemoChangeContentEvent>) => void;
   onChangeFormat?: (event: NativeSyntheticEvent<MemoFormatState>) => void;

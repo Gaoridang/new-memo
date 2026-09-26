@@ -481,6 +481,41 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
     return words.count
   }
 
+  /// 지우기가 커서 바로 앞 두들 칩의 끝 글자를 지우려 하면 그 낱말과 표시. 칩이 보일 때만 있다.
+  /// 커서 앞 글자를 방금 친 것이면(칩 낱말에 이어 친 조사 등, 한글 조합 포함) 그 글자부터 지우도록 없다.
+  private func doodleChip(deletedBy range: NSRange) -> (range: NSRange, mark: MemoDoodleMark)? {
+    let end = NSMaxRange(range)
+    if let step = openStep, step.kind == .typing, end > step.start, end <= step.end { return nil }
+    guard range.length > 0, textView.markedTextRange == nil,
+          textView.selectedRange == NSRange(location: end, length: 0),
+          let word = MemoDoodles.words(in: storage).first(where: { NSMaxRange($0.range) == end }),
+          doodleArt[word.mark.id] != nil else { return nil }
+    // 끝 글자만 지울 때다. (길게 눌러 낱말째 지우면 글자를 지운다)
+    let last = string.rangeOfComposedCharacterSequence(at: NSMaxRange(word.range) - 1)
+    return range.location >= last.location ? word : nil
+  }
+
+  /// 두들 하나를 뗀다. 글자는 그대로이고 칩은 사라지며, 되돌리기 한 번으로 다시 붙는다.
+  private func removeDoodle(_ word: (range: NSRange, mark: MemoDoodleMark)) {
+    let offset = textView.contentOffset
+    doodleAnimator.finish()
+    var marked: [NSRange] = []
+    storage.enumerateAttribute(.memoDoodle, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+      if (value as? MemoDoodleMark) === word.mark { marked.append(range) }
+    }
+    storage.beginEditing()
+    for range in marked {
+      storage.removeAttribute(.memoDoodle, range: range)
+    }
+    storage.endEditing()
+    if canAnimateDoodles {
+      doodleAnimator.exit([DoodleGhost(word: word.range, id: word.mark.id)])
+    }
+    layoutDoodles()
+    textView.contentOffset = offset
+    structureDidChange()
+  }
+
   func undo() {
     guard canUndo else { return }
     restoreHistory(at: historyIndex - 1)
@@ -572,6 +607,13 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
       }
       pendingContinuation = block.continuation
       return true
+    }
+
+    if text.isEmpty, let chip = doodleChip(deletedBy: range) {
+      // 두들 칩 바로 뒤에서 지우면 글자 대신 칩을 뗀다. 한 번 더 지우면 글자가 지워진다.
+      pendingEdit = nil
+      removeDoodle(chip)
+      return false
     }
 
     if text.isEmpty && range.length == 1

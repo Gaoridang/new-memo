@@ -326,7 +326,7 @@ export function MemoScreen({ memo: initialMemo, listOpen, onOpenList, onNewMemo 
           contentText.current = content;
           idle.markEdited();
           autoTodo.onChangeContent(previous, content, fromHistory);
-          autoDoodle.onChangeContent(previous, content, fromHistory);
+          autoDoodle.onChangeContent(previous, content);
           updateMemo({ content });
         }}
         onLeaveParagraph={(event) => {
