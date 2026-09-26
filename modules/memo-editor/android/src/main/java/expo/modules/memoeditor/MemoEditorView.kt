@@ -119,6 +119,7 @@ class MemoEditorView(context: Context, appContext: AppContext) :
   private val onChangeHistory by EventDispatcher()
   private val onFocusChange by EventDispatcher()
   private val onLeaveParagraph by EventDispatcher()
+  private val onBackspaceWhenEmpty by EventDispatcher()
 
   override val shouldUseAndroidLayout = true
 
@@ -642,7 +643,10 @@ class MemoEditorView(context: Context, appContext: AppContext) :
     activeParagraph = ActiveParagraph(index, contentText(text, MemoDocument.paragraphAt(text, offset)), wasEdited || edited)
   }
 
-  /** 고친 일반 문단에서 커서가 떠났으면 그 문단을 알린다. 줄 나누기·합치기로 내용이 바뀌었으면 알리지 않는다. */
+  /**
+   * 고친 일반 문단이나 체크하지 않은 체크박스에서 커서가 떠났으면 그 문단을 알린다.
+   * (일반 문단은 할 일인지, 체크박스는 마감일을 찾는다) 줄 나누기·합치기로 내용이 바뀌었으면 알리지 않는다.
+   */
   private fun leaveActiveParagraph() {
     val active = activeParagraph ?: return
     activeParagraph = null
@@ -653,8 +657,9 @@ class MemoEditorView(context: Context, appContext: AppContext) :
     val paragraph = paragraphs[active.index]
     val content = contentText(text, paragraph)
     if (content != active.text || content.isBlank()) return
-    if (MemoDocument.blockOf(text, paragraph) != MemoBlock.PARAGRAPH) return
-    onLeaveParagraph(mapOf("index" to active.index, "text" to content))
+    val block = MemoDocument.blockOf(text, paragraph)
+    if (block != MemoBlock.PARAGRAPH && block != MemoBlock.CHECKBOX) return
+    onLeaveParagraph(mapOf("index" to active.index, "text" to content, "block" to block.raw))
   }
 
   private fun insertionFlags(position: Int): InlineFlags {
@@ -693,6 +698,11 @@ class MemoEditorView(context: Context, appContext: AppContext) :
     val start = editText.selectionStart
     if (start < 0 || start != editText.selectionEnd) return false
     if (BaseInputConnection.getComposingSpanStart(text) != -1) return false
+    // 본문이 비었으면 JS에 알린다. (제목 칸으로 올라간다) 빈 목록 줄은 자리 표시 문자가 있어 아래에서 목록 표시만 없앤다.
+    if (text.isEmpty()) {
+      onBackspaceWhenEmpty(emptyMap())
+      return true
+    }
     val paragraph = MemoDocument.paragraphAt(text, start)
     val visibleStart = MemoDocument.visibleStart(text, paragraph)
     if (start != visibleStart || !MemoDocument.blockOf(text, paragraph).isList) return false

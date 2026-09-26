@@ -42,6 +42,15 @@ export async function detectTodo(title: string, line: string, nearby: string[]):
   };
 }
 
+/** 이미 할 일인 줄의 마감일('YYYY-MM-DD'). 날짜가 적혀 있지 않으면 due가 null이다. */
+export type DueAnswer = { due: string | null };
+
+export async function detectDue(line: string): Promise<DueAnswer | null> {
+  const data = await post<{ due?: unknown }>('/api/due', { line, today: localToday() }, 4000);
+  if (!data || !('due' in data)) return null;
+  return { due: typeof data.due === 'string' ? data.due : null };
+}
+
 /** 붙여넣은 줄마다 어떤 모양으로 바꿀지. heading·paragraph·null은 그대로 둔다. */
 export type PasteKind = 'heading' | 'paragraph' | 'bullet' | 'number' | 'todo' | null;
 

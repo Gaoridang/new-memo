@@ -19,7 +19,7 @@ import {
 import { BAR_HEIGHT, FormatBar, type FormatKey } from './FormatBar';
 import { BUTTON_ICON_SIZE, ComposeIcon, MemoListIcon, RedoIcon, UndoIcon } from './icons';
 import { HEADER_HEIGHT, HEADER_PADDING, HeaderButton } from './MemoList';
-import { memoBlocks, type Memo } from './memoStorage';
+import { holdMemo, memoBlocks, type Memo } from './memoStorage';
 import { colors } from './theme';
 import { Toast, TOAST_HEIGHT } from './Toast';
 import { useAutoTodo } from './useAutoTodo';
@@ -44,6 +44,8 @@ const BAR_HIDDEN_OFFSET = BAR_HEIGHT + 24;
 const HARDWARE_KEYBOARD_CHECK_MS = 700;
 // Android: 제목과 본문 사이를 옮겨 다니면 포커스가 잠깐 비므로, 그동안은 바닥에 띄운 컨트롤 바를 내리지 않는다.
 const BAR_HIDE_DELAY_MS = 120;
+// 새 메모로 넘어가기 전에 본문 포커스가 빠졌다는 알림을 기다리는 최대 시간
+const BODY_BLUR_WAIT_MS = 300;
 
 const FORMAT_ACTIONS: Record<FormatKey, (editor: MemoEditorHandle) => Promise<void>> = {
   bold: (editor) => editor.toggleBold(),
@@ -95,7 +97,10 @@ export function MemoScreen({ memo: initialMemo, listOpen, onOpenList, onNewMemo 
     },
     [updateMemo],
   );
-  const autoTodo = useAutoTodo(editorRef, getTitle, getContent, setDue);
+  const getDues = useCallback(() => dues.current, []);
+  const autoTodo = useAutoTodo(editorRef, initialMemo.id, getTitle, getContent, getDues, setDue);
+  // 이 화면이 메모를 연 동안에는, 먼저 닫힌 화면에서 늦게 끝난 자동 정리가 저장 파일을 고치지 않는다. (자동 저장이 덮어쓴다)
+  useEffect(() => holdMemo(initialMemo.id), [initialMemo.id]);
   // 제목 칸과 본문이 함께 쓰는 키보드 위 컨트롤 바 (iOS). 화면마다 달라야 다른 메모 화면의 것을 찾지 않는다.
   const accessoryID = `memo-format-bar-${initialMemo.id}`;
 
@@ -199,11 +204,24 @@ export function MemoScreen({ memo: initialMemo, listOpen, onOpenList, onNewMemo 
   }, [dismissKeyboard, flush, onOpenList]);
 
   // 지금 메모를 저장해 두고 빈 메모로 바꾼다. 키보드는 새 메모의 입력칸을 눌러야 올라온다.
+  // 본문에서 쓰던 줄은 포커스가 빠질 때 할 일 판정을 받으러 간다. 그 알림보다 화면이 먼저 바뀌면 알림이 버려지므로,
+  // 본문 포커스가 빠졌다는 알림(같은 순서로 온다)을 받은 뒤에 넘긴다.
+  const afterBodyBlur = useRef<(() => void) | null>(null);
   const newMemo = useCallback(() => {
-    dismissKeyboard();
-    flush();
-    onNewMemo();
-  }, [dismissKeyboard, flush, onNewMemo]);
+    const open = () => {
+      afterBodyBlur.current = null;
+      flush();
+      onNewMemo();
+    };
+    if (focusedField !== 'body') {
+      dismissKeyboard();
+      open();
+      return;
+    }
+    afterBodyBlur.current = open;
+    editorRef.current?.blur();
+    setTimeout(() => afterBodyBlur.current?.(), BODY_BLUR_WAIT_MS);
+  }, [dismissKeyboard, flush, focusedField, onNewMemo]);
 
   const focusField = (field: Exclude<FocusedField, null>) => {
     setFocusedField(field);
@@ -211,6 +229,13 @@ export function MemoScreen({ memo: initialMemo, listOpen, onOpenList, onNewMemo 
   };
   const blurField = (field: Exclude<FocusedField, null>) =>
     setFocusedField((current) => (current === field ? null : current));
+
+  // 빈 본문에서 지우면 제목 끝으로 올라간다.
+  const focusTitleEnd = useCallback(() => {
+    const end = titleText.current.length;
+    titleRef.current?.focus();
+    titleRef.current?.setSelection(end, end);
+  }, []);
 
   // 메모를 밀어 목록을 열어도 목록이 방금 고친 제목·본문을 보여주도록 저장하고 키보드를 내린다.
   useEffect(() => {
@@ -294,11 +319,17 @@ export function MemoScreen({ memo: initialMemo, listOpen, onOpenList, onNewMemo 
           updateMemo({ content });
         }}
         onLeaveParagraph={(event) => autoTodo.onLeaveParagraph(event.nativeEvent)}
+        onBackspaceWhenEmpty={focusTitleEnd}
         onChangeFormat={(event) => setFormatState(event.nativeEvent)}
         onChangeHistory={(event) => setHistory(event.nativeEvent)}
-        onFocusChange={(event) =>
-          event.nativeEvent.focused ? focusField('body') : blurField('body')
-        }
+        onFocusChange={(event) => {
+          if (event.nativeEvent.focused) {
+            focusField('body');
+            return;
+          }
+          blurField('body');
+          afterBodyBlur.current?.();
+        }}
       />
       <Animated.View style={bottomSpaceStyle} />
 

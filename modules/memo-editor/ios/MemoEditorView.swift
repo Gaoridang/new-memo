@@ -113,6 +113,7 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
   let onChangeHistory = EventDispatcher()
   let onFocusChange = EventDispatcher()
   let onLeaveParagraph = EventDispatcher()
+  let onBackspaceWhenEmpty = EventDispatcher()
 
   private static let historyLimit = 500
 
@@ -285,6 +286,19 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
 
   func blur() {
     textView.resignFirstResponder()
+  }
+
+  /// 본문이 비어 있을 때 지우기. 빈 목록 줄이면 목록 표시만 없애고, 아니면 JS에 알린다. (제목 칸으로 올라간다)
+  /// 지울 글자가 없으면 UIKit이 편집 콜백을 부르지 않으므로 MemoTextView.deleteBackward에서 부른다. 처리했으면 true.
+  func deleteBackwardInEmptyDocument() -> Bool {
+    guard storage.length == 0 else { return false }
+    if trailingBlock != .paragraph {
+      trailingBlock = .paragraph
+      structureDidChange()
+    } else {
+      onBackspaceWhenEmpty()
+    }
+    return true
   }
 
   func toggleInline(_ flag: WritableKeyPath<InlineFlags, Bool>) {
@@ -602,7 +616,8 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
     activeParagraph = (index, contentText(of: string.memoParagraph(at: location)), wasEdited || edited)
   }
 
-  /// 고친 일반 문단에서 커서가 떠났으면 그 문단을 알린다. 줄 나누기·합치기로 내용이 바뀌었으면 알리지 않는다.
+  /// 고친 일반 문단이나 체크하지 않은 체크박스에서 커서가 떠났으면 그 문단을 알린다.
+  /// (일반 문단은 할 일인지, 체크박스는 마감일을 찾는다) 줄 나누기·합치기로 내용이 바뀌었으면 알리지 않는다.
   private func leaveActiveParagraph() {
     guard let active = activeParagraph else { return }
     activeParagraph = nil
@@ -611,10 +626,11 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
     guard active.index < paragraphs.count else { return }
     let paragraph = paragraphs[active.index]
     let text = contentText(of: paragraph)
+    let block = blockOf(paragraph)
     guard text == active.text,
-          blockOf(paragraph) == .paragraph,
+          block == .paragraph || block == .checkbox,
           !text.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-    onLeaveParagraph(["index": active.index, "text": text])
+    onLeaveParagraph(["index": active.index, "text": text, "block": block.rawValue])
   }
 
   private func blockOf(_ paragraph: NSRange) -> MemoBlock {

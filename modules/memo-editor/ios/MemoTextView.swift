@@ -146,6 +146,12 @@ final class MemoTextView: UITextView {
     return super.gestureRecognizerShouldBegin(gestureRecognizer)
   }
 
+  // 빈 본문에서 지우면 지울 글자가 없어 편집 콜백이 오지 않으므로 여기서 받는다.
+  override func deleteBackward() {
+    if editor?.deleteBackwardInEmptyDocument() == true { return }
+    super.deleteBackward()
+  }
+
   // 다른 앱의 서식은 버리고 글자만 붙여 넣는다.
   override func paste(_ sender: Any?) {
     guard let text = UIPasteboard.general.string, !text.isEmpty else { return }
