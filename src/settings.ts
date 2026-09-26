@@ -4,10 +4,12 @@ export type Settings = {
   // 할 일 자동 감지. 메모 내용을 외부로 보내므로 기본은 꺼 두고, 켤 때 한 번 동의를 받는다.
   autoTodo: boolean;
   autoTodoConsented: boolean;
+  // 뜻으로 찾기는 검색할 때 메모 내용을 보내므로 처음 한 번 동의를 받는다.
+  searchConsented: boolean;
 };
 
 const SETTINGS_FILE = 'settings.json';
-const DEFAULTS: Settings = { autoTodo: false, autoTodoConsented: false };
+const DEFAULTS: Settings = { autoTodo: false, autoTodoConsented: false, searchConsented: false };
 
 export function loadSettings(): Settings {
   try {
@@ -17,6 +19,7 @@ export function loadSettings(): Settings {
     return {
       autoTodo: data.autoTodo === true,
       autoTodoConsented: data.autoTodoConsented === true,
+      searchConsented: data.searchConsented === true,
     };
   } catch {
     return DEFAULTS;

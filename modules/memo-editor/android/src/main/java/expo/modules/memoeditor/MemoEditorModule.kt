@@ -3,6 +3,8 @@ package expo.modules.memoeditor
 import android.graphics.Color
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import expo.modules.kotlin.records.Field
+import expo.modules.kotlin.records.Record
 
 // JS에서는 '#RRGGBB' 문자열로 넘어온다.
 private fun parseColor(value: String?): Int? =
@@ -12,12 +14,27 @@ private fun parseColor(value: String?): Int? =
     null
   }
 
+/** index번째 문단의 내용이 text이고 종류가 from이면 to로 바꾼다. */
+class ParagraphBlockChange : Record {
+  @Field
+  val index: Int = 0
+
+  @Field
+  val text: String = ""
+
+  @Field
+  val from: String = ""
+
+  @Field
+  val to: String = ""
+}
+
 class MemoEditorModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("MemoEditor")
 
     View(MemoEditorView::class) {
-      Events("onChangeContent", "onChangeFormat", "onFocusChange", "onLeaveParagraph")
+      Events("onChangeContent", "onChangeFormat", "onChangeHistory", "onFocusChange", "onLeaveParagraph")
 
       Prop("initialContent") { view: MemoEditorView, value: String? ->
         view.setInitialContent(value)
@@ -54,6 +71,8 @@ class MemoEditorModule : Module() {
       Prop("insetTop") { view: MemoEditorView, value: Double? ->
         view.insetTop = (value ?: 14.0).toFloat()
       }
+      // iOS에서 키보드 위에 붙일 컨트롤 바. Android에는 그런 자리가 없어 JS가 키보드를 따라 띄운다.
+      Prop("accessoryID") { _: MemoEditorView, _: String? -> }
 
       OnViewDidUpdateProps { view: MemoEditorView ->
         view.didUpdateProps()
@@ -77,8 +96,14 @@ class MemoEditorModule : Module() {
       AsyncFunction("toggleBlock") { view: MemoEditorView, kind: String ->
         view.toggleBlock(kind)
       }
-      AsyncFunction("setParagraphBlock") { view: MemoEditorView, index: Int, text: String, from: String, to: String ->
-        view.setParagraphBlock(index, text, from, to)
+      AsyncFunction("setParagraphBlocks") { view: MemoEditorView, changes: List<ParagraphBlockChange> ->
+        view.setParagraphBlocks(changes)
+      }
+      AsyncFunction("undo") { view: MemoEditorView ->
+        view.undo()
+      }
+      AsyncFunction("redo") { view: MemoEditorView ->
+        view.redo()
       }
     }
   }

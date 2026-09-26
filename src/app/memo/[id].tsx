@@ -1,19 +1,19 @@
-import { router, useLocalSearchParams, useNavigation } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useLocalSearchParams } from 'expo-router';
+import { useState } from 'react';
 
+import { useMemoDrawer } from '../../MemoDrawer';
 import { MemoScreen } from '../../MemoScreen';
 import { loadMemo } from '../../memoStorage';
 
 export default function MemoRoute() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const navigation = useNavigation();
+  // 목록에서 다른 메모를 고르면 id만 바뀌므로 화면을 새로 만든다. (에디터는 처음 내용만 읽는다)
+  return <MemoRouteScreen key={id} id={id} />;
+}
+
+function MemoRouteScreen({ id }: { id: string }) {
   // 에디터는 처음 내용만 읽으므로 화면이 떠 있는 동안 다시 읽지 않는다.
   const [memo] = useState(() => loadMemo(id));
-
-  // 앱을 켤 때 애니메이션 없이 열었어도 목록으로 돌아갈 때는 평소처럼 밀려 나간다.
-  useEffect(() => {
-    navigation.setOptions({ animation: 'default' });
-  }, [navigation]);
-
-  return <MemoScreen memo={memo} onOpenList={() => router.back()} />;
+  const { listOpen, openList, newMemo } = useMemoDrawer();
+  return <MemoScreen memo={memo} listOpen={listOpen} onOpenList={openList} onNewMemo={newMemo} />;
 }

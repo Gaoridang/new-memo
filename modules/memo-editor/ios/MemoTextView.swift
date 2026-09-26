@@ -20,12 +20,67 @@ final class MemoMarkerView: UIView {
   }
 }
 
+/// 흔들기, 세 손가락 쓸기, ⌘Z도 편집기의 되돌리기 기록을 따르게 한다.
+/// UIKit이 타이핑마다 남기는 기록은 받지 않는다. 서식과 할 일 바꾸기를 모르는 두 번째 기록이 되기 때문이다.
+final class MemoUndoManager: UndoManager {
+  weak var editor: MemoEditorView?
+
+  override init() {
+    super.init()
+    disableUndoRegistration()
+  }
+
+  override var canUndo: Bool { editor?.canUndo ?? false }
+  override var canRedo: Bool { editor?.canRedo ?? false }
+
+  override func undo() {
+    editor?.undo()
+  }
+
+  override func redo() {
+    editor?.redo()
+  }
+}
+
 final class MemoTextView: UITextView {
   weak var editor: MemoEditorView?
   let markerView = MemoMarkerView()
   let placeholderLabel = UILabel()
   let checkboxTap = UITapGestureRecognizer()
+  let memoUndoManager = MemoUndoManager()
   private var lastHeight: CGFloat = 0
+
+  /// 키보드 위에 붙일 RN InputAccessoryView의 nativeID. 제목 칸과 같은 컨트롤 바를 함께 쓴다.
+  var accessoryID: String? {
+    didSet {
+      if accessoryID != oldValue { accessory = nil }
+    }
+  }
+  private weak var accessory: UIView?
+
+  override var undoManager: UndoManager? { memoUndoManager }
+
+  // 키보드가 뜰 때 UIKit이 읽어 키보드와 함께 움직인다. RN의 InputAccessoryView가 가진 뷰를 찾아 쓴다.
+  override var inputAccessoryView: UIView? {
+    get {
+      if accessory == nil, let accessoryID, let window {
+        accessory = Self.accessoryView(nativeID: accessoryID, in: window)
+      }
+      return accessory
+    }
+    set { accessory = newValue }
+  }
+
+  private static func accessoryView(nativeID: String, in view: UIView) -> UIView? {
+    if view.responds(to: NSSelectorFromString("nativeId")),
+       view.value(forKey: "nativeId") as? String == nativeID {
+      return view.inputAccessoryView
+    }
+    for subview in view.subviews {
+      if let found = accessoryView(nativeID: nativeID, in: subview) { return found }
+    }
+    return nil
+  }
 
   override init(frame: CGRect, textContainer: NSTextContainer?) {
     super.init(frame: frame, textContainer: textContainer)

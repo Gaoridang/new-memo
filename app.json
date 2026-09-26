@@ -26,7 +26,19 @@
       "output": "server"
     },
     "plugins": [
-      "expo-router"
-    ]
+      [
+        "expo-router",
+        {
+          "origin": "https://new-memo-becomecoseco.expo.app/"
+        }
+      ]
+    ],
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "d5282476-bce9-4526-8e35-ee9a9452a00e"
+      }
+    },
+    "owner": "becomecoseco"
   }
 }

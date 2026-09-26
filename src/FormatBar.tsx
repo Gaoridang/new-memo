@@ -6,10 +6,10 @@ import {
   AutoTodoIcon,
   BoldIcon,
   BulletListIcon,
+  BUTTON_ICON_SIZE,
   CheckboxIcon,
   ICON_SIZE,
   KeyboardDismissIcon,
-  KeyboardShowIcon,
   NumberedListIcon,
   StrikethroughIcon,
   UnderlineIcon,
@@ -37,27 +37,28 @@ const PARAGRAPH_ITEMS: FormatItem[] = [
   { key: 'number', label: '번호 목록', Icon: NumberedListIcon },
 ];
 
-const ICON_GUTTER = 4;
-export const BAR_HEIGHT = 44;
+// 누르기 쉽도록 버튼마다 권장 크기(44pt)에 가까운 자리를 준다. 버튼 여덟 개가 좁은 화면(375pt)에도 들어간다.
+const BUTTON_WIDTH = 42;
+const SEPARATOR_GUTTER = 2;
+export const BAR_HEIGHT = 48;
 
 type Props = {
   formatState: MemoFormatState | null;
   formattingEnabled: boolean;
-  keyboardVisible: boolean;
   autoTodoEnabled: boolean;
   onFormat: (key: FormatKey) => void;
   onToggleAutoTodo: () => void;
-  onToggleKeyboard: () => void;
+  onDismissKeyboard: () => void;
 };
 
+// 제목이나 본문을 편집하는 동안에만 키보드 위에 띄운다.
 export function FormatBar({
   formatState,
   formattingEnabled,
-  keyboardVisible,
   autoTodoEnabled,
   onFormat,
   onToggleAutoTodo,
-  onToggleKeyboard,
+  onDismissKeyboard,
 }: Props) {
   const isActive = (key: FormatKey) => {
     if (!formatState) return false;
@@ -84,7 +85,7 @@ export function FormatBar({
         disabled={disabled}
         onPress={() => onFormat(key)}
       >
-        <Icon color={color} />
+        <Icon color={color} size={BUTTON_ICON_SIZE} />
       </BarButton>
     );
   };
@@ -97,15 +98,11 @@ export function FormatBar({
       <View style={styles.separator} />
       {/* 서식이 아니라 모드라서 제목을 편집할 때도 켜고 끌 수 있다. */}
       <BarButton label="할 일 자동 감지" active={autoTodoEnabled} onPress={onToggleAutoTodo}>
-        <AutoTodoIcon color={autoTodoEnabled ? colors.accent : colors.icon} />
+        <AutoTodoIcon color={autoTodoEnabled ? colors.accent : colors.icon} size={BUTTON_ICON_SIZE} />
       </BarButton>
       <View style={styles.separator} />
-      <BarButton label={keyboardVisible ? '키보드 내리기' : '키보드 올리기'} onPress={onToggleKeyboard}>
-        {keyboardVisible ? (
-          <KeyboardDismissIcon color={colors.icon} />
-        ) : (
-          <KeyboardShowIcon color={colors.icon} />
-        )}
+      <BarButton label="키보드 내리기" onPress={onDismissKeyboard}>
+        <KeyboardDismissIcon color={colors.icon} size={BUTTON_ICON_SIZE} />
       </BarButton>
     </View>
   );
@@ -139,15 +136,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     height: BAR_HEIGHT,
-    paddingHorizontal: 8,
+    paddingHorizontal: 6,
     borderRadius: BAR_HEIGHT / 2,
     ...floatingSurface,
     borderWidth: StyleSheet.hairlineWidth,
   },
   button: {
     height: BAR_HEIGHT,
-    width: ICON_SIZE + ICON_GUTTER * 2,
-    paddingHorizontal: ICON_GUTTER,
+    width: BUTTON_WIDTH,
+    alignItems: 'center',
     justifyContent: 'center',
   },
   pressed: {
@@ -156,7 +153,7 @@ const styles = StyleSheet.create({
   separator: {
     width: StyleSheet.hairlineWidth,
     height: ICON_SIZE,
-    marginHorizontal: ICON_GUTTER,
+    marginHorizontal: SEPARATOR_GUTTER,
     backgroundColor: colors.divider,
   },
 });

@@ -1,11 +1,120 @@
 import ExpoModulesCore
 import UIKit
 
+/// 되돌리기 한 단계에 담기는 편집의 종류
+private enum EditKind {
+  /// 글자 치기(한글 조합 포함). 낱말 하나를 한 단계로 묶는다.
+  case typing
+  /// 한 글자씩 지우기. 이어서 지우는 동안 한 단계로 묶는다.
+  case deleting
+  /// 줄 바꿈. 한 단계를 따로 차지한다.
+  case newline
+  /// 붙여넣기, 자동 고침, 서식, 목록, 체크, 자동 변환처럼 따로 되돌리는 편집
+  case command
+}
+
+private func isSpace(_ character: unichar) -> Bool {
+  guard let scalar = Unicode.Scalar(character) else { return false }
+  return CharacterSet.whitespacesAndNewlines.contains(scalar)
+}
+
+/// 사용자가 한 번에 고친 글자. 위치는 편집 전 글 기준이다.
+private struct TextEdit {
+  let kind: EditKind
+  let range: NSRange
+  /// 새로 들어간 글자 길이 (UTF-16)
+  let insertedLength: Int
+  /// 띄어 쓴 뒤 새 낱말을 쓰기 시작하는 편집
+  let startsWord: Bool
+  /// 공백이 아닌 글자가 들어가는 편집
+  let insertsWordCharacters: Bool
+
+  /// 글자가 하나씩 늘거나 주는 편집(한글 조합 포함)은 치기·지우기, 줄 바꿈은 따로,
+  /// 여러 글자가 한꺼번에 늘거나 주는 편집(붙여넣기, 선택 지우기, 자동 고침)은 명령으로 본다.
+  init(in text: NSString, replacing range: NSRange, with replacement: String) {
+    let removed = text.substring(with: range)
+    if replacement == "\n" && range.length == 0 {
+      kind = .newline
+    } else if replacement.contains("\n") || abs(replacement.count - removed.count) > 1 {
+      kind = .command
+    } else if replacement.isEmpty {
+      kind = .deleting
+    } else {
+      kind = .typing
+    }
+    self.range = range
+    let inserted = replacement as NSString
+    insertedLength = inserted.length
+    insertsWordCharacters = (0..<inserted.length).contains { !isSpace(inserted.character(at: $0)) }
+    startsWord = range.length == 0 && inserted.length > 0 && !isSpace(inserted.character(at: 0))
+      && (range.location == 0 || isSpace(text.character(at: range.location - 1)))
+  }
+}
+
+/// 이어 쓰는 중인 되돌리기 단계. 위치는 지금 글 기준이다.
+private struct OpenStep {
+  let kind: EditKind
+  var start: Int
+  var end: Int
+  var hasWordCharacters: Bool
+
+  /// 치기나 지우기만 다음 편집을 이어 받는다. 줄 바꿈과 명령은 단계를 바로 닫는다.
+  init?(beginning edit: TextEdit) {
+    switch edit.kind {
+    case .typing:
+      kind = .typing
+      start = edit.range.location
+      end = edit.range.location + edit.insertedLength
+      hasWordCharacters = edit.insertsWordCharacters
+    case .deleting:
+      kind = .deleting
+      start = edit.range.location
+      end = edit.range.location
+      hasWordCharacters = false
+    case .newline, .command:
+      return nil
+    }
+  }
+
+  /// 방금 쓰던 자리에 바로 이어지는 편집인가
+  func continues(with edit: TextEdit) -> Bool {
+    let editEnd = NSMaxRange(edit.range)
+    switch (kind, edit.kind) {
+    case (.typing, .typing):
+      // 쓰던 낱말 안이나 끝에서 이어 쓴다. (한글 조합은 앞 글자를 바꿔 치운다) 띄어 쓴 뒤 새 낱말은 새 단계다.
+      return edit.range.location <= end && editEnd >= start && editEnd <= end
+        && !(edit.startsWord && hasWordCharacters)
+    case (.typing, .deleting):
+      // 방금 친 글자를 지우는 것은 고쳐 쓰는 중이다.
+      return edit.range.location >= start && editEnd <= end
+    case (.deleting, .deleting):
+      // 앞으로(백스페이스) 또는 뒤로 이어 지운다.
+      return editEnd == start || edit.range.location == start
+    default:
+      return false
+    }
+  }
+
+  mutating func apply(_ edit: TextEdit) {
+    if kind == .typing {
+      start = min(start, edit.range.location)
+      end += edit.insertedLength - edit.range.length
+      hasWordCharacters = hasWordCharacters || edit.insertsWordCharacters
+    } else {
+      start = edit.range.location
+      end = start
+    }
+  }
+}
+
 final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate {
   let onChangeContent = EventDispatcher()
   let onChangeFormat = EventDispatcher()
+  let onChangeHistory = EventDispatcher()
   let onFocusChange = EventDispatcher()
   let onLeaveParagraph = EventDispatcher()
+
+  private static let historyLimit = 500
 
   let textView: MemoTextView
   private let layoutManager: NSLayoutManager
@@ -40,6 +149,21 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
   /// 커서가 있는 문단. 고친 문단에서 커서가 떠나면 JS에 알린다. (할 일 자동 감지)
   private var activeParagraph: (index: Int, text: String, edited: Bool)?
 
+  /// 되돌리기 기록. 단계마다 문서 전체(저장 형식 JSON)를 남기고, historyIndex가 지금 문서다.
+  /// 낱말 하나, 이어 지운 글자들, 줄 바꿈, 명령 하나가 각각 한 단계다.
+  private var history: [String] = []
+  private var historyIndex = 0
+  /// 마지막 단계가 아직 이어 쓰는 중이면 그 범위
+  private var openStep: OpenStep?
+  /// shouldChangeTextIn에서 받은 편집. textViewDidChange에서 기록한다.
+  private var pendingEdit: TextEdit?
+  /// 마지막으로 기록한 글. 편집을 받지 못했으면 이것과 비교해 바뀐 글자를 구한다.
+  private var lastText: NSString = ""
+  private var lastHistoryState: (canUndo: Bool, canRedo: Bool)?
+
+  var canUndo: Bool { historyIndex > 0 }
+  var canRedo: Bool { historyIndex < history.count - 1 }
+
   private var storage: NSTextStorage { textView.textStorage }
   private var string: NSString { textView.textStorage.string as NSString }
 
@@ -60,6 +184,7 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
     textStorage.delegate = self
     textView.editor = self
     textView.markerView.editor = self
+    textView.memoUndoManager.editor = self
     textView.delegate = self
     textView.backgroundColor = .clear
     textView.alwaysBounceVertical = true
@@ -128,11 +253,17 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
     trailingBlock = parsed?.trailingBlock ?? .paragraph
     editedRange = nil
     textView.selectedRange = NSRange(location: storage.length, length: 0)
-    textView.undoManager?.removeAllActions()
-    lastContent = MemoDocument.serialize(storage, trailingBlock: trailingBlock)
+    let content = MemoDocument.serialize(storage, trailingBlock: trailingBlock)
+    lastContent = content
+    lastText = string.copy() as! NSString
+    history = [content]
+    historyIndex = 0
+    openStep = nil
+    pendingEdit = nil
     syncTypingAttributes()
     refreshDecorations()
     emitFormat()
+    emitHistory()
   }
 
   private func focusIfNeeded() {
@@ -199,26 +330,91 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
     structureDidChange()
   }
 
-  /// index번째 문단의 내용이 text이고 종류가 from일 때만 to로 바꾼다. 커서와 스크롤은 그대로 둔다.
-  func setParagraphBlock(index: Int, text: String, from: String, to: String) -> Bool {
-    guard let fromBlock = MemoBlock(rawValue: from), let toBlock = MemoBlock(rawValue: to) else { return false }
+  /// 문단마다 내용이 text이고 종류가 from일 때만 to로 바꾼다. 한 번에 바꾼 것은 되돌리기 한 번으로 돌아간다.
+  /// 커서와 스크롤은 그대로 둔다. 바꾼 문단마다 true를 돌려준다.
+  func setParagraphBlocks(_ changes: [ParagraphBlockChange]) -> [Bool] {
+    // 되돌린 뒤(다시 하기가 남아 있으면) 자동으로 바꾸지 않는다. 바꾸면 다시 하기 기록이 사라진다.
+    guard !canRedo else { return changes.map { _ in false } }
     let paragraphs = string.memoParagraphs()
-    guard index >= 0, index < paragraphs.count else { return false }
-    let paragraph = paragraphs[index]
-    guard paragraph.length > 0,
-          contentText(of: paragraph) == text,
-          blockOf(paragraph).kind == fromBlock.kind else { return false }
+    let targets: [(paragraph: NSRange, block: MemoBlock)?] = changes.map { change in
+      guard let from = MemoBlock(rawValue: change.from),
+            let to = MemoBlock(rawValue: change.to),
+            change.index >= 0, change.index < paragraphs.count else { return nil }
+      let paragraph = paragraphs[change.index]
+      guard paragraph.length > 0,
+            contentText(of: paragraph) == change.text,
+            blockOf(paragraph).kind == from.kind else { return nil }
+      return (paragraph, to)
+    }
+    let applied = targets.map { $0 != nil }
+    guard applied.contains(true) else { return applied }
 
     endKeyboardComposition()
     let selection = textView.selectedRange
     let offset = textView.contentOffset
     storage.beginEditing()
-    setBlock(toBlock, for: paragraph)
+    for case let target? in targets {
+      setBlock(target.block, for: target.paragraph)
+    }
     storage.endEditing()
     textView.selectedRange = selection
     textView.contentOffset = offset
     structureDidChange()
-    return true
+    return applied
+  }
+
+  func undo() {
+    guard canUndo else { return }
+    restoreHistory(at: historyIndex - 1)
+  }
+
+  func redo() {
+    guard canRedo else { return }
+    restoreHistory(at: historyIndex + 1)
+  }
+
+  /// 기록의 index번째 문서로 돌아간다. 글자가 바뀌었으면 바뀐 곳으로 커서를 옮기고,
+  /// 서식만 바뀌었으면(할 일로 바꾼 것을 되돌릴 때) 커서와 스크롤을 그대로 둔다. 포커스는 건드리지 않는다.
+  private func restoreHistory(at index: Int) {
+    guard let parsed = MemoDocument.deserialize(history[index], theme: theme) else { return }
+    endKeyboardComposition()
+    let before = string.copy() as! NSString
+    let selection = textView.selectedRange
+    let offset = textView.contentOffset
+    historyIndex = index
+    openStep = nil
+    pendingEdit = nil
+    // 되돌아온 문단을 고친 문단으로 치면 커서가 떠날 때 할 일로 다시 바뀐다.
+    activeParagraph = nil
+    pendingStamp = nil
+    pendingContinuation = nil
+
+    textView.inputDelegate?.textWillChange(textView)
+    storage.setAttributedString(parsed.text)
+    textView.inputDelegate?.textDidChange(textView)
+    trailingBlock = parsed.trailingBlock
+    editedRange = nil
+    lastText = string.copy() as! NSString
+
+    if before.isEqual(to: string as String) {
+      let location = min(selection.location, storage.length)
+      textView.selectedRange = NSRange(location: location, length: min(selection.length, storage.length - location))
+      textView.contentOffset = offset
+    } else {
+      let changed = changedRange(from: before, to: string)
+      textView.selectedRange = NSRange(location: NSMaxRange(changed), length: 0)
+      textView.scrollRangeToVisible(changed)
+    }
+    syncTypingAttributes()
+    refreshDecorations()
+    let content = MemoDocument.serialize(storage, trailingBlock: trailingBlock)
+    lastContent = content
+    onChangeContent(["content": content, "fromHistory": true])
+    emitFormat()
+    emitHistory()
+    if textView.isFirstResponder {
+      trackActiveParagraph(edited: false)
+    }
   }
 
   @objc private func handleCheckboxTap(_ gesture: UITapGestureRecognizer) {
@@ -233,12 +429,14 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
 
   func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
     let string = self.string
+    pendingEdit = TextEdit(in: string, replacing: range, with: text)
 
     if text == "\n" && range.length == 0 {
       let paragraph = string.memoParagraph(at: range.location)
       let block = blockOf(paragraph)
       if block.isList && string.memoContentRange(of: paragraph).length == 0 {
         // 빈 목록 줄에서 엔터를 누르면 줄을 늘리지 않고 목록만 끝낸다.
+        pendingEdit = nil
         setBlock(.paragraph, for: paragraph)
         structureDidChange()
         return false
@@ -253,6 +451,7 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
       // 목록 줄 맨 앞에서 지우면 윗줄과 합치지 않고 목록 표시만 없앤다.
       let paragraph = string.memoParagraph(at: range.location + 1)
       if blockOf(paragraph).isList {
+        pendingEdit = nil
         setBlock(.paragraph, for: paragraph)
         structureDidChange()
         return false
@@ -280,6 +479,7 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
   }
 
   func textViewDidChange(_ textView: UITextView) {
+    let edit = committedEdit()
     if let stamp = pendingStamp {
       pendingStamp = nil
       let changed = changedRange(from: stamp.before, to: string)
@@ -295,9 +495,25 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
     normalizeEditedParagraphs()
     syncTypingAttributes()
     refreshDecorations()
-    emitContentIfChanged()
+    emitContentIfChanged(edit)
     emitFormat()
     trackActiveParagraph(edited: true)
+  }
+
+  /// 방금 바뀐 글자. shouldChangeTextIn에서 받은 편집이 결과와 맞지 않거나 없으면 편집 전후 글을 비교해 구한다.
+  private func committedEdit() -> TextEdit? {
+    let before = lastText
+    let after = string
+    lastText = after.copy() as! NSString
+    defer { pendingEdit = nil }
+    if let edit = pendingEdit, before.length - edit.range.length + edit.insertedLength == after.length {
+      return edit
+    }
+    let changed = changedRange(from: before, to: after)
+    let removedLength = before.length - (after.length - changed.length)
+    guard changed.length > 0 || removedLength > 0 else { return nil }
+    let range = NSRange(location: changed.location, length: removedLength)
+    return TextEdit(in: before, replacing: range, with: after.substring(with: changed))
   }
 
   func textViewDidChangeSelection(_ textView: UITextView) {
@@ -521,11 +737,50 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
     }
   }
 
-  private func emitContentIfChanged() {
+  /// edit이 없으면(서식, 목록, 체크, 자동 변환) 명령으로 기록한다.
+  private func emitContentIfChanged(_ edit: TextEdit? = nil) {
     let content = MemoDocument.serialize(storage, trailingBlock: trailingBlock)
     guard content != lastContent else { return }
     lastContent = content
-    onChangeContent(["content": content])
+    record(content, edit: edit)
+    onChangeContent(["content": content, "fromHistory": false])
+  }
+
+  /// 바뀐 문서를 되돌리기 기록에 남긴다. 쓰던 자리에 바로 이어지는 편집은 지금 단계에 합치고,
+  /// 아니면 새 단계를 만든다. 되돌린 뒤 새로 고치면 다시 하기 기록은 버린다.
+  private func record(_ content: String, edit: TextEdit?) {
+    guard !history.isEmpty else {
+      history = [content]
+      historyIndex = 0
+      return
+    }
+    history.removeSubrange((historyIndex + 1)...)
+    if let edit, var step = openStep, step.continues(with: edit) {
+      step.apply(edit)
+      history[historyIndex] = content
+      openStep = step
+      if historyIndex > 0 && history[historyIndex - 1] == content {
+        // 이 단계에서 친 글자를 모두 지웠으면 아무것도 바꾸지 않는 단계를 남기지 않는다.
+        history.removeLast()
+        historyIndex -= 1
+        openStep = nil
+      }
+    } else {
+      history.append(content)
+      if history.count > Self.historyLimit {
+        history.removeFirst(history.count - Self.historyLimit)
+      }
+      historyIndex = history.count - 1
+      openStep = edit.flatMap { OpenStep(beginning: $0) }
+    }
+    emitHistory()
+  }
+
+  private func emitHistory() {
+    let state = (canUndo: canUndo, canRedo: canRedo)
+    if let last = lastHistoryState, last == state { return }
+    lastHistoryState = state
+    onChangeHistory(["canUndo": state.canUndo, "canRedo": state.canRedo])
   }
 
   private func emitFormat() {

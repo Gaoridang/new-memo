@@ -17,6 +17,8 @@ interface MemoEditTextListener {
   fun checkboxParagraphStart(x: Float, y: Float): Int?
   fun onCheckboxTap(paragraphStart: Int)
   fun onPastePlainText(text: String)
+  fun undo()
+  fun redo()
 }
 
 @SuppressLint("AppCompatCustomView", "ViewConstructor")
@@ -91,7 +93,16 @@ class MemoEditText(context: Context) : EditText(context) {
   }
 
   // 다른 앱의 서식은 버리고 글자만 붙여 넣는다.
+  // 되돌리기·다시 하기(메뉴, Ctrl+Z)는 EditText의 기록 대신 편집기의 기록을 쓴다.
   override fun onTextContextMenuItem(id: Int): Boolean {
+    if (id == android.R.id.undo) {
+      listener?.undo()
+      return true
+    }
+    if (id == android.R.id.redo) {
+      listener?.redo()
+      return true
+    }
     if (id == android.R.id.paste || id == android.R.id.pasteAsPlainText) {
       val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
       val clip = clipboard?.primaryClip

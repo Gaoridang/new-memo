@@ -9,6 +9,8 @@ export const colors = {
   accent: '#007AFF',
   barBorder: 'rgba(0, 0, 0, 0.06)',
   highlight: '#F2F2F7',
+  // 마감이 오늘이거나 지난 할 일
+  urgent: '#FF3B30',
 } as const;
 
 // 서식 바와 알림처럼 본문 위에 떠 있는 알약 모양 표면

@@ -16,7 +16,8 @@ export function useAutosave(initial: Memo) {
       timer.current = null;
     }
     const memo = latest.current;
-    if (memo.title === saved.current.title && memo.content === saved.current.content) return;
+    const { title, content, dues } = saved.current;
+    if (memo.title === title && memo.content === content && memo.dues === dues) return;
 
     saved.current = memo;
     saveMemo({ ...memo, updatedAt: Date.now() });
