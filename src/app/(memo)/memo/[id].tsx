@@ -1,9 +1,9 @@
 import { useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 
-import { useMemoDrawer } from '../../MemoDrawer';
-import { MemoScreen } from '../../MemoScreen';
-import { loadMemo } from '../../memoStorage';
+import { useMemoDrawer } from '../../../MemoDrawer';
+import { MemoScreen } from '../../../MemoScreen';
+import { loadMemo } from '../../../memoStorage';
 
 export default function MemoRoute() {
   const { id } = useLocalSearchParams<{ id: string }>();

@@ -136,6 +136,11 @@ function MemoListPanel({ currentId, onOpenMemo, onNewMemo }: MemoListPanelProps)
       currentId={currentId}
       onSelect={(memo) => onOpenMemo(memo.id)}
       onCreate={onNewMemo}
+      onOpenSettings={() => {
+        // 검색칸의 키보드가 설정 화면 위에 남지 않게 먼저 내린다.
+        KeyboardController.dismiss();
+        router.push('/settings');
+      }}
       onDelete={(memo) => {
         deleteMemo(memo.id);
         // 보고 있던 메모를 지우면 남은 메모 가운데 가장 최근 것(없으면 새 메모)을 뒤에 펼쳐 둔다.

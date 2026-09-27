@@ -20,6 +20,7 @@ import { BAR_HEIGHT, FormatBar, type FormatKey } from './FormatBar';
 import { BUTTON_ICON_SIZE, ComposeIcon, MemoListIcon, RedoIcon, UndoIcon } from './icons';
 import { HEADER_HEIGHT, HEADER_PADDING, HeaderButton } from './MemoList';
 import { holdMemo, memoBlocks, type Memo } from './memoStorage';
+import { toolbarLayout, useSettings } from './settings';
 import { colors } from './theme';
 import { Toast, TOAST_HEIGHT, useToast } from './Toast';
 import { useAutoDoodle } from './useAutoDoodle';
@@ -100,6 +101,7 @@ export function MemoScreen({ memo: initialMemo, listOpen, onOpenList, onNewMemo 
     [updateMemo],
   );
   const toast = useToast();
+  const toolbar = toolbarLayout(useSettings());
   const idle = useEditorIdle(editorRef);
   const getDues = useCallback(() => dues.current, []);
   const autoTodo = useAutoTodo(editorRef, initialMemo.id, getTitle, getContent, getDues, setDue, toast.show);
@@ -252,6 +254,7 @@ export function MemoScreen({ memo: initialMemo, listOpen, onOpenList, onNewMemo 
 
   const formatBar = (
     <FormatBar
+      layout={toolbar}
       formatState={formatState}
       formattingEnabled={barField === 'body'}
       autoTodoEnabled={autoTodo.enabled}
