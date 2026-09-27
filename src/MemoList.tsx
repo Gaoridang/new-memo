@@ -3,7 +3,7 @@ import { ActivityIndicator, Alert, FlatList, Pressable, StyleSheet, Text, TextIn
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { dueDate, dueRelative } from './dueLabel';
-import { AskIcon, BUTTON_ICON_SIZE, ComposeIcon } from './icons';
+import { AskIcon, BUTTON_ICON_SIZE, ComposeIcon, SettingsIcon } from './icons';
 import { memoPreview, upcomingTodos, type Memo } from './memoStorage';
 import { colors } from './theme';
 import { useMemoSearch, type SearchState } from './useMemoSearch';
@@ -24,6 +24,7 @@ type Props = {
   onSelect: (memo: Memo) => void;
   onCreate: () => void;
   onDelete: (memo: Memo) => void;
+  onOpenSettings: () => void;
 };
 
 function formatDate(time: number) {
@@ -49,7 +50,7 @@ function rowText(memo: Memo) {
   return { title: lines[0] ?? '새로운 메모', preview: lines.slice(1).join(' ') };
 }
 
-export function MemoList({ memos, currentId, onSelect, onCreate, onDelete }: Props) {
+export function MemoList({ memos, currentId, onSelect, onCreate, onDelete, onOpenSettings }: Props) {
   const insets = useSafeAreaInsets();
   const [query, setQuery] = useState('');
   const { state: searchState, search, clear } = useMemoSearch();
@@ -76,8 +77,11 @@ export function MemoList({ memos, currentId, onSelect, onCreate, onDelete }: Pro
   return (
     <View style={[styles.screen, { paddingTop: insets.top }]}>
       <View style={styles.header}>
+        <HeaderButton label="설정" onPress={onOpenSettings}>
+          <SettingsIcon color={colors.icon} size={BUTTON_ICON_SIZE} />
+        </HeaderButton>
         <HeaderButton label="새 메모" onPress={onCreate}>
-          <ComposeIcon color={colors.accent} size={BUTTON_ICON_SIZE} />
+          <ComposeIcon color={colors.icon} size={BUTTON_ICON_SIZE} />
         </HeaderButton>
       </View>
 
@@ -259,7 +263,7 @@ const styles = StyleSheet.create({
     height: HEADER_HEIGHT,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'flex-end',
+    justifyContent: 'space-between',
     paddingHorizontal: HEADER_PADDING,
   },
   headerButton: {

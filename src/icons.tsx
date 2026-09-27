@@ -188,3 +188,32 @@ export function AskIcon({ color, size }: IconProps) {
     </Icon>
   );
 }
+
+// 톱니바퀴: 설정
+export function SettingsIcon({ color, size }: IconProps) {
+  return (
+    <Icon size={size}>
+      <Path
+        d="M8.67 4.46L8.81 2.49A7.6 7.6 0 0 1 11.19 2.49L11.33 4.46A5.7 5.7 0 0 1 12.98 5.14L14.47 3.85A7.6 7.6 0 0 1 16.15 5.53L14.86 7.02A5.7 5.7 0 0 1 15.54 8.67L17.51 8.81A7.6 7.6 0 0 1 17.51 11.19L15.54 11.33A5.7 5.7 0 0 1 14.86 12.98L16.15 14.47A7.6 7.6 0 0 1 14.47 16.15L12.98 14.86A5.7 5.7 0 0 1 11.33 15.54L11.19 17.51A7.6 7.6 0 0 1 8.81 17.51L8.67 15.54A5.7 5.7 0 0 1 7.02 14.86L5.53 16.15A7.6 7.6 0 0 1 3.85 14.47L5.14 12.98A5.7 5.7 0 0 1 4.46 11.33L2.49 11.19A7.6 7.6 0 0 1 2.49 8.81L4.46 8.67A5.7 5.7 0 0 1 5.14 7.02L3.85 5.53A7.6 7.6 0 0 1 5.53 3.85L7.02 5.14A5.7 5.7 0 0 1 8.67 4.46Z"
+        {...strokeProps(color)}
+      />
+      <Circle cx={10} cy={10} r={2.4} {...strokeProps(color)} />
+    </Icon>
+  );
+}
+
+export function BackIcon({ color, size }: IconProps) {
+  return (
+    <Icon size={size}>
+      <Path d="M12.25 3.75L6 10L12.25 16.25" {...strokeProps(color, 1.8)} />
+    </Icon>
+  );
+}
+
+export function CheckIcon({ color, size }: IconProps) {
+  return (
+    <Icon size={size}>
+      <Path d="M4.25 10.5L8.1 14.25L15.75 6" {...strokeProps(color, 1.9)} />
+    </Icon>
+  );
+}

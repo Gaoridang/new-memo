@@ -10,3 +10,21 @@ export function swipeHaptic() {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
   }
 }
+
+/** 툴바 버튼을 길게 눌러 집어 든 순간 */
+export function liftHaptic() {
+  if (Platform.OS === 'android') {
+    Haptics.performAndroidHapticsAsync(Haptics.AndroidHaptics.Long_Press);
+  } else {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+  }
+}
+
+/** 끌고 있는 툴바 버튼이 놓일 자리가 바뀔 때 */
+export function tickHaptic() {
+  if (Platform.OS === 'android') {
+    Haptics.performAndroidHapticsAsync(Haptics.AndroidHaptics.Clock_Tick);
+  } else {
+    Haptics.selectionAsync();
+  }
+}

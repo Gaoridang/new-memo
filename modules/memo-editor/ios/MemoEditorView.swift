@@ -149,6 +149,8 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
   }
   /// 두들 칩이 나타나고 사라지는 움직임
   private let doodleAnimator = MemoDoodleAnimator()
+  /// 올라와 있는 키보드(와 그 위에 붙은 컨트롤 바)의 화면 좌표. 내려가 있으면 nil
+  private var keyboardFrame: CGRect?
 
   /// 글자가 하나도 없는 마지막 빈 줄의 문단 종류. 붙일 글자가 없어 따로 기억한다.
   private(set) var trailingBlock: MemoBlock = .paragraph
@@ -224,15 +226,87 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
         finishTransitions()
       }
       textView.frame = bounds
+      updateBottomInset()
     }
+  }
+
+  override func safeAreaInsetsDidChange() {
+    super.safeAreaInsetsDidChange()
+    updateBottomInset()
   }
 
   override func didMoveToWindow() {
     super.didMoveToWindow()
+    let center = NotificationCenter.default
+    center.removeObserver(self, name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
     if window == nil {
       finishDoodleAnimation()
+    } else {
+      center.addObserver(
+        self, selector: #selector(keyboardWillChangeFrame(_:)),
+        name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
+      updateBottomInset()
     }
     focusIfNeeded()
+  }
+
+  // MARK: - Keyboard
+
+  /// 본문은 키보드 뒤까지 화면 끝에 닿아 있고, 키보드에 가려지는 만큼만 아래 여백(contentInset)을 준다.
+  /// 본문 크기가 그대로라 키보드를 끌어 내리는 동안에도 레이아웃이 바뀌지 않고, 떠 있는 컨트롤 바 둘레로 글이 비친다.
+  @objc private func keyboardWillChangeFrame(_ notification: Notification) {
+    guard let info = notification.userInfo,
+          let end = (info[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue else { return }
+    // 크기가 없으면(설정의 '크로스 페이드 전환 선호') 내려간 것이다.
+    keyboardFrame = end.height > 0 ? end : nil
+    let duration = (info[UIResponder.keyboardAnimationDurationUserInfoKey] as? NSNumber)?.doubleValue ?? 0
+    let curve = (info[UIResponder.keyboardAnimationCurveUserInfoKey] as? NSNumber)?.uintValue ?? 0
+    // 눌러서 포커스를 받는 중이면 아직 커서가 누른 자리로 옮겨지기 전이다. 옮겨진 뒤에 키보드와 같은 곡선으로 움직인다.
+    DispatchQueue.main.async { [weak self] in
+      self?.updateBottomInset(duration: duration, options: UIView.AnimationOptions(rawValue: curve << 16))
+    }
+  }
+
+  /// 본문 아래쪽이 가려지는 높이. 키보드(와 컨트롤 바)가 있으면 그만큼, 없으면 홈 인디케이터 자리만큼이다.
+  private var coveredBottom: CGFloat {
+    var covered = safeAreaInsets.bottom
+    if let keyboardFrame, let screen = window?.windowScene?.screen {
+      let keyboard = convert(keyboardFrame, from: screen.coordinateSpace)
+      covered = max(covered, bounds.maxY - keyboard.minY)
+    }
+    return min(max(covered, 0), bounds.height)
+  }
+
+  /// 아래 여백을 가려지는 높이에 맞춘다. 키보드가 올라오면 커서 줄이 가려지지 않게 함께 올리고,
+  /// 내려가면 끝에 빈자리가 남지 않게 글이 따라 내려온다. (끌어 내리는 중이면 스크롤 뷰가 스스로 제자리로 돌아온다)
+  private func updateBottomInset(duration: TimeInterval = 0, options: UIView.AnimationOptions = []) {
+    let textView = self.textView
+    let bottom = coveredBottom
+    let previous = textView.contentInset.bottom
+    guard bottom != previous else { return }
+    let changes: () -> Void = {
+      textView.contentInset.bottom = bottom
+      textView.verticalScrollIndicatorInsets.bottom = bottom
+      if bottom > previous {
+        if textView.isFirstResponder {
+          textView.scrollCaretIntoView()
+        }
+      } else if !textView.isDragging && !textView.isDecelerating {
+        let maxOffset = max(
+          -textView.adjustedContentInset.top,
+          textView.contentSize.height + textView.adjustedContentInset.bottom - textView.bounds.height)
+        if textView.contentOffset.y > maxOffset {
+          textView.contentOffset.y = maxOffset
+        }
+      }
+    }
+    guard duration > 0, window != nil else {
+      changes()
+      return
+    }
+    UIView.animate(
+      withDuration: duration, delay: 0, options: [options, .beginFromCurrentState, .allowUserInteraction],
+      animations: changes)
   }
 
   // MARK: - Props

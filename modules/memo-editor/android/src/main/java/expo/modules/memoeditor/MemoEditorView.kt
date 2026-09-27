@@ -203,6 +203,12 @@ class MemoEditorView(context: Context, appContext: AppContext) :
       field = value
       updatePadding()
     }
+  /** 본문 아래를 가리며 떠 있는 것(컨트롤 바)의 높이. 끝 줄과 커서는 그 위로 올리고, 글은 그 뒤로도 이어 그린다. */
+  var insetBottom = 0f
+    set(value) {
+      field = value
+      updatePadding()
+    }
 
   /** 두들 그림과 칩 색. null이면 두들을 숨긴다. (문서에 붙은 두들 표시는 그대로 둔다) */
   private var doodleRenderer: DoodleRenderer? = null
@@ -381,7 +387,7 @@ class MemoEditorView(context: Context, appContext: AppContext) :
 
   private fun updatePadding() {
     val horizontal = theme.px(insetHorizontal).roundToInt()
-    editText.setPadding(horizontal, theme.px(insetTop).roundToInt(), horizontal, theme.px(24f).roundToInt())
+    editText.setPadding(horizontal, theme.px(insetTop).roundToInt(), horizontal, theme.px(24f + insetBottom).roundToInt())
   }
 
   private fun applyTheme() {

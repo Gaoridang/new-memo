@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AccessibilityInfo, Alert, Platform, type AlertButton } from 'react-native';
+import { AccessibilityInfo, Alert } from 'react-native';
 
 import type { MemoDoodleChange, MemoLeaveParagraphEvent } from '../modules/memo-editor';
 import { DOODLES } from './doodles/catalog';
-import { doodleArt, DOODLE_STYLES, type DoodleStyle } from './doodles/presets';
+import { doodleArt } from './doodles/presets';
 import { DoodleIcon } from './icons';
 import { suggestDoodle, type DoodleSuggestion } from './jevApi';
 import { memoBlocks, nearbyLines, type MemoBlock, type MemoDoodle } from './memoStorage';
-import { loadSettings, saveSettings } from './settings';
+import { loadSettings, saveSettings, useSettings } from './settings';
 import type { ShowToast } from './Toast';
 import type { EditorIdle } from './useEditorIdle';
 
@@ -23,22 +23,23 @@ const NEARBY_BEFORE = 3;
 const NEARBY_AFTER = 2;
 
 const CONSENT =
-  '두들을 누르면 이 메모의 줄들과 제목을 TypeSafe AI(Jev)로 보내 그림으로 그릴 낱말을 찾고, 그 낱말을 작은 그림과 함께 칩으로 바꿔요. 두들을 붙인 메모는 새로 쓴 줄도 다 쓰고 넘어가면 같은 방법으로 찾아요. 어떤 그림으로 붙일까요?';
+  '두들을 누르면 이 메모의 줄들과 제목을 TypeSafe AI(Jev)로 보내 그림으로 그릴 낱말을 찾고, 그 낱말을 작은 그림과 함께 칩으로 바꿔요. 두들을 붙인 메모는 새로 쓴 줄도 다 쓰고 넘어가면 같은 방법으로 찾아요. 그림 모양(파스텔, 스티커)은 설정에서 고를 수 있어요.';
 
 type Pick = DoodleSuggestion & { index: number; text: string };
 
 /**
  * 두들: 메모에서 그림으로 그릴 만한 낱말을 Jev가 고르면, 그 낱말을 그림과 함께 칩으로 바꾼다.
- * - 두들 버튼: 두들이 없는 메모면 메모 전체를 훑어 줄마다 하나씩 붙이고, 있으면 그림 세트를 바꾸거나 모두 뗀다.
+ * - 두들 버튼은 붙이기만 한다. 메모를 훑어 두들이 없는 줄마다 하나씩 붙인다. 그림 세트는 설정 화면에서 고른다.
  * - 두들이 붙은 메모에서는 새로 쓴 줄도 다 쓰고 넘어가면 붙인다. 알림은 띄우지 않고 되돌리기로 뗄 수 있다.
- * 두들은 메모 내용이라 붙이고 떼는 일은 모두 되돌리기 한 번으로 돌아간다. 칩 바로 뒤에서 지우면 그 칩만 떨어진다.
+ * 두들은 메모 내용이라 붙이는 일은 되돌리기 한 번으로 돌아간다. 떼려면 칩 바로 뒤에서 지운다.
  * 되돌리기나 지우기로 뗀 두들은 이 화면에서 그 줄과 그 낱말에 다시 붙이지 않는다.
  */
 export function useAutoDoodle(getTitle: () => string, getContent: () => string, idle: EditorIdle, showToast: ShowToast) {
-  const [style, setStyle] = useState<DoodleStyle>(() => loadSettings().doodleStyle);
-  const [decorated, setDecorated] = useState(() => hasDoodles(memoBlocks(getContent())));
+  const style = useSettings().doodleStyle;
+  const [initiallyDecorated] = useState(() => hasDoodles(memoBlocks(getContent())));
   const [scanning, setScanning] = useState(false);
-  const decoratedRef = useRef(decorated);
+  // 두들이 붙은 메모에서만 새로 쓴 줄에도 붙인다.
+  const decoratedRef = useRef(initiallyDecorated);
   const scanningRef = useRef(false);
   // 훑는 사이 화면이 닫히거나 새로 훑으면 늦게 온 답은 버린다.
   const scanId = useRef(0);
@@ -145,60 +146,32 @@ export function useAutoDoodle(getTitle: () => string, getContent: () => string, 
     });
   }, [getContent, getTitle, setBusy, showToast, suggest, whenIdle]);
 
-  const removeAll = useCallback(() => {
-    scanId.current++;
-    setBusy(false);
-    whenIdle(async (editor) => {
-      const removed = await editor.removeDoodles();
-      if (removed > 0) AccessibilityInfo.announceForAccessibility(`두들 ${removed}개를 뗐어요`);
-    });
-  }, [setBusy, whenIdle]);
-
-  const changeStyle = useCallback((next: DoodleStyle) => {
-    saveSettings({ doodleStyle: next });
-    setStyle(next);
-  }, []);
-
-  /** 두들 버튼. 두들이 없으면 메모 전체를 훑고, 있으면 다시 훑거나 그림 세트를 바꾸거나 모두 뗀다. */
+  /**
+   * 두들 버튼. 묻지 않고 메모를 훑어 두들이 없는 줄(새로 쓴 줄, 답을 받지 못한 줄)에 붙인다.
+   * 처음 한 번만 메모 내용을 보내도 되는지 묻는다.
+   */
   const press = useCallback(() => {
     if (scanningRef.current) return;
-    if (decoratedRef.current) {
-      const other = DOODLE_STYLES.find((item) => item.id !== style) ?? DOODLE_STYLES[0];
-      // 두들이 없는 줄(새로 쓴 줄, 답을 받지 못한 줄)만 다시 본다.
-      const rescan: AlertButton = { text: '다시 훑기', onPress: scan };
-      const restyle: AlertButton = { text: `${other.name}로 바꾸기`, onPress: () => changeStyle(other.id) };
-      const remove: AlertButton = { text: '모두 떼기', style: 'destructive', onPress: removeAll };
-      // Android 알림은 버튼을 셋(왼쪽부터 중립·부정·긍정)까지만 보여 주므로 취소는 뒤로 가기나 바깥 누르기로 한다.
-      const buttons =
-        Platform.OS === 'android' ? [remove, restyle, rescan] : [rescan, restyle, remove, { text: '취소', style: 'cancel' as const }];
-      Alert.alert('두들', '이 메모의 두들을 어떻게 할까요?', buttons, { cancelable: true });
-      return;
-    }
     if (loadSettings().doodlesConsented) {
       scan();
       return;
     }
     Alert.alert('두들', CONSENT, [
       { text: '취소', style: 'cancel' },
-      ...DOODLE_STYLES.map((item) => ({
-        text: item.name,
+      {
+        text: '붙이기',
         onPress: () => {
-          saveSettings({ doodleStyle: item.id, doodlesConsented: true });
-          setStyle(item.id);
+          saveSettings({ doodlesConsented: true });
           scan();
         },
-      })),
+      },
     ]);
-  }, [changeStyle, removeAll, scan, style]);
+  }, [scan]);
 
   /** 본문이 바뀔 때마다 부른다. 두들이 있는 메모인지 살피고, 되돌리기나 지우기로 두들이 떨어진 줄과 두들은 기억해 둔다. */
   const onChangeContent = useCallback((previous: string, next: string) => {
     const blocks = memoBlocks(next);
-    const has = hasDoodles(blocks);
-    if (has !== decoratedRef.current) {
-      decoratedRef.current = has;
-      setDecorated(has);
-    }
+    decoratedRef.current = hasDoodles(blocks);
     for (const { line, doodle } of removedDoodles(memoBlocks(previous), blocks)) {
       undone.current.add(line);
       declined.current.add(declineKey(doodle.id, doodle.word));
@@ -207,7 +180,7 @@ export function useAutoDoodle(getTitle: () => string, getContent: () => string, 
 
   const art = useMemo(() => doodleArt(style), [style]);
 
-  return { decorated, scanning, art, press, onLeaveParagraph, onChangeContent };
+  return { scanning, art, press, onLeaveParagraph, onChangeContent };
 }
 
 const hasDoodles = (blocks: MemoBlock[]) => blocks.some((block) => block.doodle);
@@ -223,7 +196,7 @@ function canPlace(blocks: MemoBlock[], index: number, text?: string) {
   return blocks.filter((item) => item.doodle).length < MAX_PER_MEMO;
 }
 
-/** 글자는 그대로인데 두들이 떨어진 줄들과 떨어진 두들 (되돌리기, 칩 뒤에서 지우기, 모두 떼기) */
+/** 글자는 그대로인데 두들이 떨어진 줄들과 떨어진 두들 (되돌리기, 칩 뒤에서 지우기) */
 function removedDoodles(previous: MemoBlock[], next: MemoBlock[]): { line: string; doodle: MemoDoodle }[] {
   const had = new Map<string, MemoDoodle>();
   for (const block of previous) if (block.doodle) had.set(block.text.trim(), block.doodle);

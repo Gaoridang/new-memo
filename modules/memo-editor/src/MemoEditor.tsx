@@ -82,6 +82,11 @@ export type MemoEditorProps = ViewProps & {
   placeholderColor?: ColorValue;
   insetHorizontal?: number;
   insetTop?: number;
+  /**
+   * Android: 본문 아래를 가리며 떠 있는 컨트롤 바의 높이. 끝 줄과 커서는 그 위로 올리고, 글은 그 뒤로도 이어 그린다.
+   * (iOS는 무시한다. iOS의 컨트롤 바는 키보드에 붙어 있고, 본문은 키보드에 가려지는 만큼 스스로 비킨다)
+   */
+  insetBottom?: number;
   /** iOS: 키보드 위에 붙일 InputAccessoryView의 nativeID (Android는 무시한다) */
   accessoryID?: string;
   /**
