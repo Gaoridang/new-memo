@@ -5,7 +5,6 @@ import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.text.Editable
 import android.text.InputType
-import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.TextWatcher
 import android.util.TypedValue
@@ -27,7 +26,7 @@ private const val HISTORY_LIMIT = 500
 
 /** 되돌리기 한 단계에 담기는 편집의 종류 */
 private enum class EditKind {
-  /** 글자 치기(한글 조합 포함). 친 글자 하나(한글은 음절 하나)가 한 단계다. */
+  /** 글자 치기(한글 조합 포함). 자판을 한 번 누른 만큼(한글은 자모 하나)이 한 단계다. */
   TYPING,
 
   /** 한 글자씩 지우기. 이어서 지우는 동안 한 단계로 묶는다. */
@@ -79,9 +78,6 @@ private class TextEdit(text: CharSequence, at: Int, removed: CharSequence, repla
   /** 공백이 아닌 글자가 들어가는 편집 */
   val insertsWordCharacters = inserted.any { !it.isWhitespace() }
 
-  /** 글자 하나가 두 글자가 되는 편집. 받침이 다음 글자로 넘어간다. ('속' → '소기') */
-  val splitsCharacter = codePoints(removedText) == 1 && codePoints(inserted) == 2
-
   /** 띄어 쓴 뒤 새 낱말을 쓰기 시작하는 편집 */
   val startsWord = removedLength == 0 && inserted.isNotEmpty() && !inserted[0].isWhitespace() &&
     (start == 0 || text[start - 1].isWhitespace())
@@ -120,7 +116,7 @@ private class OpenStep(
   var hasWordCharacters: Boolean
 ) {
   /**
-   * 치기: 이어 친 글자마다 되돌리기 한 단계씩이다. 단계마다 그 단계까지 친 글이 끝나는 자리이고, 마지막 단계가 지금 문서다.
+   * 치기: 자판을 누를 때마다 되돌리기 한 단계씩이다. 단계마다 그때까지 친 글이 끝나는 자리이고, 마지막 단계가 지금 문서다.
    * 지우기: 비어 있다. (이어 지운 글자는 한 단계다)
    */
   val ends = ArrayList<Int>()
@@ -241,7 +237,7 @@ class MemoEditorView(context: Context, appContext: AppContext) :
 
   /**
    * 되돌리기 기록. 단계마다 문서 전체(저장 형식 JSON)를 남기고, historyIndex가 지금 문서다.
-   * 친 글자 하나(한글은 음절 하나), 이어 지운 글자들, 줄 바꿈, 명령 하나가 각각 한 단계다.
+   * 자판 한 번(한글은 자모 하나), 이어 지운 글자들, 줄 바꿈, 명령 하나가 각각 한 단계다.
    */
   private val history = mutableListOf<String>()
   private var historyIndex = 0
@@ -1142,7 +1138,7 @@ class MemoEditorView(context: Context, appContext: AppContext) :
   }
 
   /**
-   * 바뀐 문서를 되돌리기 기록에 남긴다. 쓰던 자리에서 이어 치면 글자마다 단계를 쌓고, 이어 지우면 지금 단계에 합치고,
+   * 바뀐 문서를 되돌리기 기록에 남긴다. 쓰던 자리에서 이어 치면 자판을 누를 때마다 단계를 쌓고, 이어 지우면 지금 단계에 합치고,
    * 아니면 새 단계를 만든다. 되돌린 뒤 새로 고치면 다시 하기 기록은 버린다.
    */
   private fun record(content: String, edit: TextEdit?, shift: Int) {
@@ -1163,7 +1159,7 @@ class MemoEditorView(context: Context, appContext: AppContext) :
     val step = openStep
     if (edit != null && step != null && step.continues(edit)) {
       if (step.kind == EditKind.TYPING) {
-        recordTyping(content, edit, step, shift)
+        recordTyping(content, edit, step)
         if (step.ends.isEmpty()) openStep = null
       } else {
         step.start = edit.start
@@ -1184,66 +1180,25 @@ class MemoEditorView(context: Context, appContext: AppContext) :
   }
 
   /**
-   * 쓰던 자리에서 이어 친 편집을 기록한다. 받침이 넘어가 글자 하나가 둘이 되면('속' → '소기') 새 글자를 친 것이라
-   * 그 전 모습('속')을 한 단계로 남긴다. 되돌리면 새 글자가 생기기 전 화면으로 돌아간다.
-   * 그 밖에 친 글자를 고친 편집(한글 조합, 자동 고침, 방금 친 글자 지우기)은 고친 글자가 든 단계를 걷어 내고
-   * 새로 들어간 글자마다 단계를 쌓는다. ('teh'를 'the'로 고치면 't', 'th', 'the' 세 단계다)
-   * 단계 자리는 편집 전 글 기준이고(record가 shift만큼 옮긴다), 글은 shift만큼 밀려 있을 수 있다.
+   * 쓰던 자리에서 이어 친 편집을 기록한다. 자판을 한 번 누른 만큼이 한 단계라 되돌리면 그 전 화면으로 돌아간다.
+   * ('가나다라'는 '가나달', '가나다', '가낟'… 으로 돌아간다)
+   * 방금 친 글자를 지우거나 고쳐 이 단계에서 거친 모습으로 돌아가면 그 뒤로 쌓은 단계를 걷어 낸다. (고친 글자는 다시 나타나지 않는다)
+   * 단계 자리는 편집 전 글 기준이다. (record가 shift만큼 옮긴다)
    */
-  private fun recordTyping(content: String, edit: TextEdit, step: OpenStep, shift: Int) {
-    val location = edit.start
-    if (edit.splitsCharacter) {
-      pushHistory(content)
-      step.ends.add(location + edit.insertedLength)
-      step.hasWordCharacters = step.hasWordCharacters || edit.insertsWordCharacters
+  private fun recordTyping(content: String, edit: TextEdit, step: OpenStep) {
+    // 이 단계가 시작되기 전 모습까지 본다. 기록 한도에서 앞 단계가 잘려 나갔으면 남은 데까지만 본다.
+    val first = maxOf(0, historyIndex - step.ends.size)
+    val same = (historyIndex - 1 downTo first).firstOrNull { history[it] == content }
+    if (same != null) {
+      repeat(minOf(step.ends.size, historyIndex - same)) { step.ends.removeAt(step.ends.lastIndex) }
+      history.subList(same + 1, history.size).clear()
+      historyIndex = same
       return
     }
-    while (step.ends.isNotEmpty() && step.ends.last() > location) {
-      step.ends.removeAt(step.ends.lastIndex)
-      // 기록 한도에서 앞 단계가 잘려 나갔으면 걷어 낼 단계가 없다.
-      if (historyIndex > 0) {
-        history.removeAt(historyIndex)
-        historyIndex--
-      }
-    }
-    if (edit.insertedLength > 0) {
-      val text = editText.text
-      val offset = if (text == null) null else listOf(shift, 0).firstOrNull { holds(text, location + it, edit.inserted) }
-      if (text != null && offset != null) {
-        val characters = BreakIterator.getCharacterInstance().apply { setText(edit.inserted) }
-        var characterEnd = characters.following(0)
-        while (characterEnd != BreakIterator.DONE && characterEnd < edit.insertedLength) {
-          pushHistory(contentRemoving(text, location + offset + characterEnd, location + offset + edit.insertedLength))
-          step.ends.add(location + characterEnd)
-          characterEnd = characters.next()
-        }
-      }
-      pushHistory(content)
-      step.ends.add(location + edit.insertedLength)
-      step.hasWordCharacters = step.hasWordCharacters || edit.insertsWordCharacters
-    } else if (location > step.end) {
-      // 걷어 낸 단계에서 앞 글자가 남았다.
-      pushHistory(content)
-      step.ends.add(location)
-    } else {
-      history[historyIndex] = content
-    }
-    if (step.ends.isNotEmpty() && historyIndex > 0 && history[historyIndex - 1] == content) {
-      // 조합하던 글자를 원래대로 되돌려 놓았으면 아무것도 바꾸지 않는 단계를 남기지 않는다.
-      history.removeAt(historyIndex)
-      historyIndex--
-      step.ends.removeAt(step.ends.lastIndex)
-    }
+    pushHistory(content)
+    step.ends.add(edit.start + edit.insertedLength)
+    step.hasWordCharacters = step.hasWordCharacters || edit.insertsWordCharacters
   }
-
-  /** text의 position부터 characters가 있는가 */
-  private fun holds(text: CharSequence, position: Int, characters: String) =
-    position >= 0 && position + characters.length <= text.length &&
-      text.subSequence(position, position + characters.length).toString() == characters
-
-  /** 지금 문서에서 [start, end) 글자를 뺀 저장 형식 */
-  private fun contentRemoving(text: Editable, start: Int, end: Int): String =
-    MemoDocument.serialize(SpannableStringBuilder(text).apply { delete(start, end) })
 
   private fun emitHistory() {
     val state = canUndo to canRedo
