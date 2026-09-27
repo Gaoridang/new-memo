@@ -40,16 +40,40 @@ class MemoEditText(context: Context) : EditText(context) {
     val underlay = underlay
     if (layout != null && underlay != null) {
       canvas.save()
-      // TextView처럼 위아래 여백으로 스크롤되어 들어간 부분은 가린다. 옆으로는 칩 여백이 조금 나갈 수 있게 둔다.
-      val maxScrollY = layout.height - (height - extendedPaddingTop - extendedPaddingBottom)
+      // TextView처럼 위 여백으로 스크롤되어 들어간 부분은 가린다. 옆으로는 칩 여백이 조금 나갈 수 있게 둔다.
+      // 아래 여백에서는 글과 함께 보인다. (drawBottomPadding)
       val clipTop = if (scrollY == 0) 0 else extendedPaddingTop + scrollY
-      val clipBottom = height + scrollY - if (scrollY >= maxScrollY) 0 else extendedPaddingBottom
-      canvas.clipRect(scrollX, clipTop, scrollX + width, clipBottom)
+      canvas.clipRect(scrollX, clipTop, scrollX + width, height + scrollY)
       canvas.translate(totalPaddingLeft.toFloat(), totalPaddingTop.toFloat())
       underlay(canvas, layout)
       canvas.restore()
     }
     super.onDraw(canvas)
+    drawBottomPadding(canvas)
+  }
+
+  /**
+   * TextView는 끝까지 스크롤하지 않으면 아래 여백으로 들어간 글을 그리지 않는다.
+   * 아래 여백은 떠 있는 컨트롤 바와 그 둘레 자리라, 컨트롤 바 뒤로도 글이 이어 보이도록 그 부분의 글을 더 그린다.
+   * (커서와 선택 영역은 그리지 않는다. 커서 줄은 여백 위로 올라와 있다)
+   */
+  private fun drawBottomPadding(canvas: Canvas) {
+    val layout = layout ?: return
+    // 글이 없으면 TextView가 안내 문구를 그린다.
+    if (text.isNullOrEmpty() || extendedPaddingBottom <= 0) return
+    // TextView.onDraw와 같은 조건으로, 여백을 가리지 않았으면 그리지 않는다.
+    val maxScrollY = layout.height - (height - extendedPaddingTop - extendedPaddingBottom)
+    if (scrollY == maxScrollY) return
+    canvas.save()
+    canvas.clipRect(
+      compoundPaddingLeft + scrollX,
+      height + scrollY - extendedPaddingBottom,
+      width - compoundPaddingRight + scrollX,
+      height + scrollY
+    )
+    canvas.translate(compoundPaddingLeft.toFloat(), extendedPaddingTop.toFloat())
+    layout.draw(canvas)
+    canvas.restore()
   }
 
   override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
@@ -167,9 +191,14 @@ class MemoEditText(context: Context) : EditText(context) {
 
   override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
     super.onSizeChanged(width, height, oldWidth, oldHeight)
-    // 키보드가 올라와 높이가 줄면 커서가 가려지지 않게 따라 스크롤한다.
+    // 높이는 키보드를 따라 프레임마다 바뀐다. 줄면 커서가 가려지지 않게 따라 올리고,
+    // 늘면 끝까지 스크롤해 둔 글이 끝에 빈자리를 남기지 않고 따라 내려온다.
     if (height < oldHeight && hasFocus()) {
       post { bringPointIntoView(selectionEnd.coerceAtLeast(0)) }
+    } else if (height > oldHeight) {
+      val layout = layout ?: return
+      val maxScrollY = (layout.height - (height - extendedPaddingTop - extendedPaddingBottom)).coerceAtLeast(0)
+      if (scrollY > maxScrollY) scrollTo(scrollX, maxScrollY)
     }
   }
 }

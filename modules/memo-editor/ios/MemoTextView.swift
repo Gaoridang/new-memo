@@ -99,7 +99,6 @@ final class MemoTextView: UITextView {
   let placeholderLabel = UILabel()
   let checkboxTap = UITapGestureRecognizer()
   let memoUndoManager = MemoUndoManager()
-  private var lastHeight: CGFloat = 0
 
   /// 키보드 위에 붙일 RN InputAccessoryView의 nativeID. 제목 칸과 같은 컨트롤 바를 함께 쓴다.
   var accessoryID: String? {
@@ -160,12 +159,6 @@ final class MemoTextView: UITextView {
       y: inset.top,
       width: max(0, bounds.width - inset.left - inset.right),
       height: editor?.theme.lineHeight ?? 22)
-
-    // 키보드가 올라와 높이가 줄면 커서가 가려지지 않게 따라 스크롤한다.
-    if bounds.height < lastHeight - 0.5 && isFirstResponder {
-      scrollCaretIntoView()
-    }
-    lastHeight = bounds.height
   }
 
   func scrollCaretIntoView() {

@@ -25,7 +25,7 @@ Run lint and typecheck before declaring any task done.
 
 ## Navigation & Routing
 
-- Use **Expo Router** for all navigation (`main` is `expo-router/entry`). Routes live in `src/app/` — every file there is a screen. `_layout.tsx` renders the current route in a `Slot` inside `MemoDrawer` (`src/MemoDrawer.tsx`, react-native-drawer-layout): the memo list lies under the memo, and swiping the memo right reveals it while ~76pt of the memo stays visible. Keep non-route code (components, hooks, storage) in `src/` outside `src/app/`.
+- Use **Expo Router** for all navigation (`main` is `expo-router/entry`). Routes live in `src/app/` — every file there is a screen. `_layout.tsx` renders the current route in a `Slot` inside `MemoDrawer` (`src/MemoDrawer.tsx`, a react-native-gesture-handler pan driving Reanimated): the memo list lies under the memo, and swiping the memo right reveals it while ~76pt of the memo stays visible. Taps open/close with a timing curve; a released swipe settles with a critically damped spring that keeps the finger's velocity. Keep non-route code (components, hooks, storage) in `src/` outside `src/app/`.
   - `src/app/index.tsx` — redirects to the most recent memo (or a new one)
   - `src/app/memo/[id].tsx` — editor for one memo, keyed by `id`; picking a memo in the list, or the new-memo button (list header or memo header), does `router.replace` and closes the drawer. New memos open unfocused; the keyboard only comes up when the user taps a field.
   - `src/app/api/*+api.ts` — server routes (API routes, `web.output: "server"`) that ask Jev (TypeSafe AI). Shared call helper and date logic live in `src/server/` (imported only by API routes). Needs `TYPESAFE_API_KEY` in `.env.local` (server-only; never `EXPO_PUBLIC_`). Restart `expo start` after changing it.
@@ -35,6 +35,13 @@ Run lint and typecheck before declaring any task done.
     - `search+api.ts` — which memo line answers a question
     - `doodle+api.ts` — which word in a line gets a doodle, and which one (catalog in `src/doodles/catalog.ts`; art and style sets in `src/doodles/art.ts`, `presets.ts`)
 - Import `router`, `Slot`, and `useLocalSearchParams` from `expo-router`. The app root is wrapped in `GestureHandlerRootView` (the drawer uses react-native-gesture-handler). Docs: https://docs.expo.dev/router/introduction.md
+
+## Editor & keyboard
+
+The memo body is a native editor (`modules/memo-editor`, `MemoEditor` in `src/MemoScreen.tsx`); the format bar floats over it and the body text shows around it.
+
+- iOS: the format bar (and toast) is the keyboard's `inputAccessoryView`. The body reaches the bottom of the screen and never resizes for the keyboard: `MemoEditorView.swift` sets its own bottom `contentInset` from `keyboardWillChangeFrame` and scrolls the caret with the keyboard's curve. Don't add a JS spacer that resizes the body with the keyboard — it relayouts every frame during interactive dismissal and leaves a blank band behind the bar.
+- Android: the format bar is a JS view that follows the keyboard frame by frame (react-native-keyboard-controller). A spacer under the body follows the keyboard too, and the bar's space is the body's bottom padding (`insetBottom`), which `MemoEditText` also draws text into so it shows behind the bar.
 
 ## Building with EAS
 

@@ -75,6 +75,8 @@ public class MemoEditorModule: Module {
       Prop("insetTop") { (view: MemoEditorView, value: Double?) in
         view.insetTop = CGFloat(value ?? 14)
       }
+      // Android에서 JS가 본문 위에 띄우는 컨트롤 바 자리. iOS의 컨트롤 바는 키보드에 붙어 있어 키보드 높이로 비킨다.
+      Prop("insetBottom") { (_: MemoEditorView, _: Double?) in }
       Prop("accessoryID") { (view: MemoEditorView, value: String?) in
         view.textView.accessoryID = value
       }
