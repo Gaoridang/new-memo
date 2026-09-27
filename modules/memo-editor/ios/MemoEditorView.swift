@@ -41,6 +41,8 @@ private struct TextEdit {
   let startsWord: Bool
   /// 공백이 아닌 글자가 들어가는 편집
   let insertsWordCharacters: Bool
+  /// 글자 하나가 두 글자가 되는 편집. 받침이 다음 글자로 넘어간다. ('속' → '소기')
+  let splitsCharacter: Bool
 
   /// 글자가 하나씩 늘거나 주는 편집(한글 조합 포함)은 치기·지우기, 줄 바꿈은 따로,
   /// 여러 글자가 한꺼번에 늘거나 주는 편집(붙여넣기, 선택 지우기, 자동 고침)은 명령으로 본다.
@@ -49,6 +51,7 @@ private struct TextEdit {
     let same = commonPrefixLength(removed, replacement)
     let inserted = (replacement as NSString).substring(from: same)
     let changed = NSRange(location: range.location + same, length: range.length - same)
+    splitsCharacter = (removed as NSString).substring(from: same).count == 1 && inserted.count == 2
     if inserted == "\n" && changed.length == 0 {
       kind = .newline
     } else if inserted.contains("\n") || abs(replacement.count - removed.count) > 1 {
@@ -686,12 +689,14 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
   }
 
   /// 방금 바뀐 글자. shouldChangeTextIn에서 받은 편집이 결과와 맞지 않거나 없으면 편집 전후 글을 비교해 구한다.
+  /// (한글 키보드는 '속'에 'ㅣ'를 치면 'ㅣ'를 넣는다고 알리고 글은 '소기'로 바꾼다. 길이만으로는 알 수 없다)
   private func committedEdit() -> TextEdit? {
     let before = lastText
     let after = string
     lastText = after.copy() as! NSString
     defer { pendingEdit = nil }
-    if let edit = pendingEdit, before.length - edit.range.length + edit.insertedLength == after.length {
+    if let edit = pendingEdit, NSMaxRange(edit.range) <= before.length,
+       after.isEqual(to: before.replacingCharacters(in: edit.range, with: edit.inserted)) {
       return edit
     }
     let changed = changedRange(from: before, to: after)
@@ -702,11 +707,24 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
   }
 
   func textViewDidChangeSelection(_ textView: UITextView) {
+    closeStepIfCaretLeft()
     syncTypingAttributes()
     emitFormat()
     if textView.isFirstResponder {
       trackActiveParagraph(edited: false)
     }
+  }
+
+  /// 쓰거나 지우던 자리에서 커서를 옮기면 이어 쓰던 단계를 닫는다. 돌아와 지운 글자는 방금 친 글자가 아니므로
+  /// 따로 한 단계가 되어 되돌리기 한 번에 돌아온다. 글이 기록 전이면(키보드 입력은 선택이 먼저 바뀐다) 편집이 옮긴 것이다.
+  /// 키보드가 조합하던 글자를 골라 바꿔 치울 때처럼 쓰던 자리에서 끝나는 선택은 그대로 둔다.
+  private func closeStepIfCaretLeft() {
+    guard let step = openStep else { return }
+    let selection = textView.selectedRange
+    let caret = step.kind == .typing ? step.end : step.start
+    guard selection.location < step.start || NSMaxRange(selection) != caret,
+          lastText.isEqual(to: storage.string) else { return }
+    openStep = nil
   }
 
   func textViewDidBeginEditing(_ textView: UITextView) {
@@ -1018,10 +1036,18 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
     historyIndex = history.count - 1
   }
 
-  /// 쓰던 자리에서 이어 친 편집을 기록한다. 편집이 고친 글자가 든 단계는 걷어 내고(한글 조합, 방금 친 글자 지우기)
-  /// 새로 들어간 글자마다 단계를 쌓는다. '속' → '소기'처럼 한 번에 두 글자가 되면 '소'까지와 '기'까지 두 단계다.
+  /// 쓰던 자리에서 이어 친 편집을 기록한다. 받침이 넘어가 글자 하나가 둘이 되면('속' → '소기') 새 글자를 친 것이라
+  /// 그 전 모습('속')을 한 단계로 남긴다. 되돌리면 새 글자가 생기기 전 화면으로 돌아간다.
+  /// 그 밖에 친 글자를 고친 편집(한글 조합, 자동 고침, 방금 친 글자 지우기)은 고친 글자가 든 단계를 걷어 내고
+  /// 새로 들어간 글자마다 단계를 쌓는다. ('teh'를 'the'로 고치면 't', 'th', 'the' 세 단계다)
   private func recordTyping(_ content: String, edit: TextEdit, step: inout OpenStep) {
     let location = edit.range.location
+    if edit.splitsCharacter {
+      pushHistory(content)
+      step.ends.append(location + edit.insertedLength)
+      step.hasWordCharacters = step.hasWordCharacters || edit.insertsWordCharacters
+      return
+    }
     while let end = step.ends.last, end > location {
       step.ends.removeLast()
       // 기록 한도에서 앞 단계가 잘려 나갔으면 걷어 낼 단계가 없다.

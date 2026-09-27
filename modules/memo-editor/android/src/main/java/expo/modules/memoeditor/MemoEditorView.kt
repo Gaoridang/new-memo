@@ -76,6 +76,9 @@ private class TextEdit(text: CharSequence, at: Int, removed: CharSequence, repla
   /** 공백이 아닌 글자가 들어가는 편집 */
   val insertsWordCharacters = inserted.any { !it.isWhitespace() }
 
+  /** 글자 하나가 두 글자가 되는 편집. 받침이 다음 글자로 넘어간다. ('속' → '소기') */
+  val splitsCharacter = codePoints(removed.subSequence(same, removed.length)) == 1 && codePoints(inserted) == 2
+
   /** 띄어 쓴 뒤 새 낱말을 쓰기 시작하는 편집 */
   val startsWord = removedLength == 0 && inserted.isNotEmpty() && !inserted[0].isWhitespace() &&
     (start == 0 || text[start - 1].isWhitespace())
@@ -945,9 +948,21 @@ class MemoEditorView(context: Context, appContext: AppContext) :
       editText.setSelection(start + 1)
       return
     }
+    closeStepIfCaretLeft(minOf(start, end), maxOf(start, end))
     layoutDoodles()
     emitFormat()
     if (editText.isFocused) trackActiveParagraph(edited = false)
+  }
+
+  /**
+   * 쓰거나 지우던 자리에서 커서를 옮기면 이어 쓰던 단계를 닫는다. 돌아와 지운 글자는 방금 친 글자가 아니므로
+   * 따로 한 단계가 되어 되돌리기 한 번에 돌아온다. (편집이 옮긴 커서는 기록한 뒤에 알려 와 쓰던 자리에 있다)
+   * 입력기가 조합하던 글자를 골라 바꿔 치울 때처럼 쓰던 자리에서 끝나는 선택은 그대로 둔다.
+   */
+  private fun closeStepIfCaretLeft(start: Int, end: Int) {
+    val step = openStep ?: return
+    val caret = if (step.kind == EditKind.TYPING) step.end else step.start
+    if (start < step.start || end != caret) openStep = null
   }
 
   override fun onBackspace(): Boolean {
@@ -1095,12 +1110,20 @@ class MemoEditorView(context: Context, appContext: AppContext) :
   }
 
   /**
-   * 쓰던 자리에서 이어 친 편집을 기록한다. 편집이 고친 글자가 든 단계는 걷어 내고(한글 조합, 방금 친 글자 지우기)
-   * 새로 들어간 글자마다 단계를 쌓는다. '속' → '소기'처럼 한 번에 두 글자가 되면 '소'까지와 '기'까지 두 단계다.
+   * 쓰던 자리에서 이어 친 편집을 기록한다. 받침이 넘어가 글자 하나가 둘이 되면('속' → '소기') 새 글자를 친 것이라
+   * 그 전 모습('속')을 한 단계로 남긴다. 되돌리면 새 글자가 생기기 전 화면으로 돌아간다.
+   * 그 밖에 친 글자를 고친 편집(한글 조합, 자동 고침, 방금 친 글자 지우기)은 고친 글자가 든 단계를 걷어 내고
+   * 새로 들어간 글자마다 단계를 쌓는다. ('teh'를 'the'로 고치면 't', 'th', 'the' 세 단계다)
    * 단계 자리는 편집 전 글 기준이고(record가 shift만큼 옮긴다), 글은 shift만큼 밀려 있을 수 있다.
    */
   private fun recordTyping(content: String, edit: TextEdit, step: OpenStep, shift: Int) {
     val location = edit.start
+    if (edit.splitsCharacter) {
+      pushHistory(content)
+      step.ends.add(location + edit.insertedLength)
+      step.hasWordCharacters = step.hasWordCharacters || edit.insertsWordCharacters
+      return
+    }
     while (step.ends.isNotEmpty() && step.ends.last() > location) {
       step.ends.removeAt(step.ends.lastIndex)
       // 기록 한도에서 앞 단계가 잘려 나갔으면 걷어 낼 단계가 없다.
