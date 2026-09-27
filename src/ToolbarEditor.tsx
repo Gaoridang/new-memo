@@ -26,7 +26,6 @@ import { scheduleOnRN } from 'react-native-worklets';
 import { BAR_HEIGHT, barStyles, TOOLBAR_BUTTON_INFO } from './FormatBar';
 import { liftHaptic, tickHaptic } from './haptics';
 import { BUTTON_ICON_SIZE } from './icons';
-import { loadSettings, saveSettings, toolbarLayout } from './settings';
 import { colors } from './theme';
 import { DEFAULT_TOOLBAR, isDefaultToolbar, type ToolbarItem } from './toolbar';
 import {
@@ -65,9 +64,6 @@ const PALETTE_BORDER = 1.5;
 
 const labelOf = (item: ToolbarItem) => (item === 'separator' ? '구분선' : TOOLBAR_BUTTON_INFO[item].label);
 
-const sameToolbar = (a: readonly ToolbarItem[] | null, b: readonly ToolbarItem[] | null) =>
-  a === b || (!!a && !!b && a.length === b.length && a.every((item, i) => item === b[i]));
-
 /** 누른 곳에 있는 항목 */
 function findTarget(targets: HitTarget[], x: number, y: number) {
   'worklet';
@@ -90,6 +86,9 @@ function hintText(drag: Drag | null, notice: string | null) {
 }
 
 type Props = {
+  // 처음 보여 줄 배치. 고칠 때마다 onChange로 알리고, 저장은 설정 화면의 저장 버튼이 한다.
+  initial: readonly ToolbarItem[];
+  onChange: (items: ToolbarItem[]) => void;
   // 끄는 동안에는 화면이 스크롤되거나 뒤로 가지 않게 한다.
   onDragChange: (dragging: boolean) => void;
 };
@@ -97,13 +96,10 @@ type Props = {
 /**
  * 툴바 편집: 실제 서식 바와 같은 모양의 미리보기에서 버튼을 길게 눌러 끌어 옮긴다.
  * 툴바 밖으로 끌어내면 빠져 아래 '넣을 수 있는 버튼'으로 가고, 거기서 끌어 오거나 누르면 다시 들어간다.
- * 바꿀 때마다 저장해 메모의 서식 바가 바로 따른다.
  */
-export function ToolbarEditor({ onDragChange }: Props) {
+export function ToolbarEditor({ initial, onChange, onDragChange }: Props) {
   const { width: screenWidth } = useWindowDimensions();
-  const [state, dispatch] = useReducer(editorReducer, loadSettings(), (settings) =>
-    initialEditorState(toolbarLayout(settings)),
-  );
+  const [state, dispatch] = useReducer(editorReducer, initial, initialEditorState);
   const { entries, drag, ghost, landing, vanishing, notice, layout, released } = state;
 
   // 집어 든 항목의 가운데, 누른 곳과 가운데 사이, 떠오른 정도(크기), 흰 네모, 사라지는 정도
@@ -159,12 +155,9 @@ export function ToolbarEditor({ onDragChange }: Props) {
     targets.set(hitTargets(entries, layout));
   }, [entries, layout, targets]);
 
-  // 바꿀 때마다 저장한다. 기본 배치면 비워 두어 나중에 기본 배치가 바뀌면 따라가게 한다.
   useEffect(() => {
-    const items = itemsOf(entries);
-    const toolbar = isDefaultToolbar(items) ? null : items;
-    if (!sameToolbar(toolbar, loadSettings().toolbar)) saveSettings({ toolbar });
-  }, [entries]);
+    onChange(itemsOf(entries));
+  }, [entries, onChange]);
 
   const dragging = ghost !== null;
   useEffect(() => {

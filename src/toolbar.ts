@@ -60,6 +60,10 @@ export function readToolbar(value: unknown): ToolbarItem[] | null {
   return seen.size > 0 ? tidySeparators(items, (item) => item === 'separator') : null;
 }
 
+export function sameToolbar(a: readonly ToolbarItem[], b: readonly ToolbarItem[]) {
+  return a.length === b.length && a.every((item, i) => item === b[i]);
+}
+
 export function isDefaultToolbar(items: readonly ToolbarItem[]) {
-  return items.length === DEFAULT_TOOLBAR.length && items.every((item, i) => item === DEFAULT_TOOLBAR[i]);
+  return sameToolbar(items, DEFAULT_TOOLBAR);
 }

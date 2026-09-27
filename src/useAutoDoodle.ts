@@ -36,9 +36,10 @@ type Pick = DoodleSuggestion & { index: number; text: string };
  */
 export function useAutoDoodle(getTitle: () => string, getContent: () => string, idle: EditorIdle, showToast: ShowToast) {
   const style = useSettings().doodleStyle;
-  const [decorated, setDecorated] = useState(() => hasDoodles(memoBlocks(getContent())));
+  const [initiallyDecorated] = useState(() => hasDoodles(memoBlocks(getContent())));
   const [scanning, setScanning] = useState(false);
-  const decoratedRef = useRef(decorated);
+  // 두들이 붙은 메모에서만 새로 쓴 줄에도 붙인다.
+  const decoratedRef = useRef(initiallyDecorated);
   const scanningRef = useRef(false);
   // 훑는 사이 화면이 닫히거나 새로 훑으면 늦게 온 답은 버린다.
   const scanId = useRef(0);
@@ -170,11 +171,7 @@ export function useAutoDoodle(getTitle: () => string, getContent: () => string, 
   /** 본문이 바뀔 때마다 부른다. 두들이 있는 메모인지 살피고, 되돌리기나 지우기로 두들이 떨어진 줄과 두들은 기억해 둔다. */
   const onChangeContent = useCallback((previous: string, next: string) => {
     const blocks = memoBlocks(next);
-    const has = hasDoodles(blocks);
-    if (has !== decoratedRef.current) {
-      decoratedRef.current = has;
-      setDecorated(has);
-    }
+    decoratedRef.current = hasDoodles(blocks);
     for (const { line, doodle } of removedDoodles(memoBlocks(previous), blocks)) {
       undone.current.add(line);
       declined.current.add(declineKey(doodle.id, doodle.word));
@@ -183,7 +180,7 @@ export function useAutoDoodle(getTitle: () => string, getContent: () => string, 
 
   const art = useMemo(() => doodleArt(style), [style]);
 
-  return { decorated, scanning, art, press, onLeaveParagraph, onChangeContent };
+  return { scanning, art, press, onLeaveParagraph, onChangeContent };
 }
 
 const hasDoodles = (blocks: MemoBlock[]) => blocks.some((block) => block.doodle);

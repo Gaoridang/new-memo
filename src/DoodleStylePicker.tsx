@@ -5,7 +5,6 @@ import Svg, { Path } from 'react-native-svg';
 import type { DoodleId } from './doodles/catalog';
 import { doodleArt, DOODLE_STYLES, type DoodleStyle } from './doodles/presets';
 import { CheckIcon } from './icons';
-import { saveSettings, useSettings } from './settings';
 import { colors } from './theme';
 
 // 그림 세트마다 보여 주는 두들 칩
@@ -21,13 +20,17 @@ const CHIP_HEIGHT = 26;
 // 스티커의 흰 테두리와 그림자는 24x24 격자 밖으로 조금 나가므로 그만큼 넓게 그린다.
 const ART_OVERFLOW = 3;
 
-/** 두들 그림 세트(파스텔, 스티커) 고르기. 고르면 열려 있는 메모의 두들도 바로 바뀐다. */
-export function DoodleStylePicker() {
-  const { doodleStyle } = useSettings();
+type Props = {
+  value: DoodleStyle;
+  onChange: (style: DoodleStyle) => void;
+};
+
+/** 두들 그림 세트(파스텔, 스티커) 고르기. 저장하면 열려 있는 메모의 두들도 바뀐다. */
+export function DoodleStylePicker({ value, onChange }: Props) {
   return (
     <View style={styles.card} accessibilityRole="radiogroup">
       {DOODLE_STYLES.map((style, i) => {
-        const selected = style.id === doodleStyle;
+        const selected = style.id === value;
         return (
           <Fragment key={style.id}>
             {i > 0 && <View style={styles.divider} />}
@@ -35,7 +38,7 @@ export function DoodleStylePicker() {
               accessibilityRole="radio"
               accessibilityLabel={style.name}
               accessibilityState={{ checked: selected }}
-              onPress={() => saveSettings({ doodleStyle: style.id })}
+              onPress={() => onChange(style.id)}
               style={({ pressed }) => [styles.row, pressed && styles.pressed]}
             >
               <View style={styles.rowText}>

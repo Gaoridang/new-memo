@@ -253,7 +253,6 @@ export function MemoScreen({ memo: initialMemo, listOpen, onOpenList, onNewMemo 
       formatState={formatState}
       formattingEnabled={barField === 'body'}
       autoTodoEnabled={autoTodo.enabled}
-      doodled={autoDoodle.decorated}
       doodling={autoDoodle.scanning}
       onFormat={handleFormat}
       onToggleAutoTodo={autoTodo.toggle}
@@ -277,7 +276,7 @@ export function MemoScreen({ memo: initialMemo, listOpen, onOpenList, onNewMemo 
             <RedoIcon color={history.canRedo ? colors.icon : colors.iconDisabled} size={BUTTON_ICON_SIZE} />
           </HeaderButton>
           <HeaderButton label="새 메모" onPress={newMemo}>
-            <ComposeIcon color={colors.accent} size={BUTTON_ICON_SIZE} />
+            <ComposeIcon color={colors.icon} size={BUTTON_ICON_SIZE} />
           </HeaderButton>
         </View>
       </View>

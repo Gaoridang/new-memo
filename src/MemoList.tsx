@@ -81,7 +81,7 @@ export function MemoList({ memos, currentId, onSelect, onCreate, onDelete, onOpe
           <SettingsIcon color={colors.icon} size={BUTTON_ICON_SIZE} />
         </HeaderButton>
         <HeaderButton label="새 메모" onPress={onCreate}>
-          <ComposeIcon color={colors.accent} size={BUTTON_ICON_SIZE} />
+          <ComposeIcon color={colors.icon} size={BUTTON_ICON_SIZE} />
         </HeaderButton>
       </View>
 

@@ -64,8 +64,7 @@ type Props = {
   formatState: MemoFormatState | null;
   formattingEnabled: boolean;
   autoTodoEnabled: boolean;
-  // 이 메모에 두들이 붙어 있는지, 메모를 훑는 중인지
-  doodled: boolean;
+  // 메모를 훑어 두들을 찾는 중인지
   doodling: boolean;
   onFormat: (key: FormatKey) => void;
   onToggleAutoTodo: () => void;
@@ -79,7 +78,6 @@ export function FormatBar({
   formatState,
   formattingEnabled,
   autoTodoEnabled,
-  doodled,
   doodling,
   onFormat,
   onToggleAutoTodo,
@@ -133,12 +131,13 @@ export function FormatBar({
           </BarButton>
         );
       case 'doodle':
+        // 붙이기만 하는 버튼이라 켜고 끄는 버튼처럼 보이지 않게 늘 같은 색이다.
         return (
-          <BarButton key={button} label={label} width={buttonWidth} active={doodled} busy={doodling} onPress={onPressDoodles}>
+          <BarButton key={button} label={label} width={buttonWidth} busy={doodling} onPress={onPressDoodles}>
             {doodling ? (
-              <ActivityIndicator size="small" color={colors.accent} />
+              <ActivityIndicator size="small" color={colors.icon} />
             ) : (
-              <Icon color={doodled ? colors.accent : colors.icon} size={BUTTON_ICON_SIZE} />
+              <Icon color={colors.icon} size={BUTTON_ICON_SIZE} />
             )}
           </BarButton>
         );
