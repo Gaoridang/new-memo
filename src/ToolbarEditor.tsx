@@ -406,7 +406,7 @@ function Ghost({ entry, x, y, lift, surface, fade }: GhostProps) {
   }));
   const shown = useAnimatedStyle(() => ({ opacity: surface.get() }));
   return (
-    <Animated.View pointerEvents="none" style={[styles.ghost, { width }, moving]}>
+    <Animated.View style={[styles.ghost, { width }, moving]}>
       <Animated.View style={[styles.ghostSurface, shown]} />
       <Animated.View style={[styles.ghostLabel, shown]}>
         <Text style={styles.ghostLabelText} numberOfLines={1}>
@@ -535,6 +535,7 @@ const styles = StyleSheet.create({
     top: 0,
     left: 0,
     height: GHOST_SIZE,
+    pointerEvents: 'none',
     alignItems: 'center',
     justifyContent: 'center',
   },
