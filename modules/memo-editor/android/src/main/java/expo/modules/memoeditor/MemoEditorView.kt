@@ -61,7 +61,10 @@ private fun commonPrefixLength(a: CharSequence, b: CharSequence): Int {
 private class TextEdit(text: CharSequence, at: Int, removed: CharSequence, replacement: CharSequence) {
   private val same = commonPrefixLength(removed, replacement)
   val start = at + same
-  val removedLength = removed.length - same
+
+  /** 지운 글자 */
+  val removedText = removed.subSequence(same, removed.length).toString()
+  val removedLength = removedText.length
 
   /** 새로 들어간 글자 */
   val inserted = replacement.subSequence(same, replacement.length).toString()
@@ -77,13 +80,37 @@ private class TextEdit(text: CharSequence, at: Int, removed: CharSequence, repla
   val insertsWordCharacters = inserted.any { !it.isWhitespace() }
 
   /** 글자 하나가 두 글자가 되는 편집. 받침이 다음 글자로 넘어간다. ('속' → '소기') */
-  val splitsCharacter = codePoints(removed.subSequence(same, removed.length)) == 1 && codePoints(inserted) == 2
+  val splitsCharacter = codePoints(removedText) == 1 && codePoints(inserted) == 2
 
   /** 띄어 쓴 뒤 새 낱말을 쓰기 시작하는 편집 */
   val startsWord = removedLength == 0 && inserted.isNotEmpty() && !inserted[0].isWhitespace() &&
     (start == 0 || text[start - 1].isWhitespace())
 
   private fun codePoints(chars: CharSequence) = Character.codePointCount(chars, 0, chars.length)
+}
+
+/**
+ * 차례로 온 편집들을 첫 편집 전 글에서 한 번에 고친 편집으로 합친다. text는 지금 글이다.
+ * 앞 편집들이 고친 자리에 닿지 않는 편집이 있으면 null
+ */
+private fun combine(text: CharSequence, edits: List<TextEdit>): TextEdit? {
+  var start = edits[0].start
+  var removed = edits[0].removedText
+  var replacement = edits[0].inserted
+  for (edit in edits.drop(1)) {
+    // 지금 글에서 합친 편집이 고친 자리는 [start, end)이다.
+    val end = start + replacement.length
+    val editEnd = edit.start + edit.removedLength
+    if (edit.start > end || editEnd < start) return null
+    val removedBefore = if (edit.start < start) edit.removedText.substring(0, start - edit.start) else ""
+    val removedAfter = if (editEnd > end) edit.removedText.substring(edit.removedLength - (editEnd - end)) else ""
+    val keptBefore = if (edit.start > start) replacement.substring(0, edit.start - start) else ""
+    val keptAfter = if (editEnd < end) replacement.substring(editEnd - start) else ""
+    removed = removedBefore + removed + removedAfter
+    replacement = keptBefore + edit.inserted + keptAfter
+    start = minOf(start, edit.start)
+  }
+  return TextEdit(text, start, removed, replacement)
 }
 
 /** 이어 쓰는 중인 되돌리기 단계. 위치는 지금 글 기준이다. */
@@ -120,6 +147,8 @@ private class OpenStep(
     for (i in ends.indices) ends[i] = (ends[i] + by).coerceAtLeast(start)
   }
 
+  fun copy() = OpenStep(kind, start, hasWordCharacters).also { it.ends.addAll(ends) }
+
   companion object {
     /** 치기나 지우기만 다음 편집을 이어 받는다. 줄 바꿈과 명령은 단계를 바로 닫는다. */
     fun begin(edit: TextEdit): OpenStep? = when (edit.kind) {
@@ -130,6 +159,21 @@ private class OpenStep(
       else -> null
     }
   }
+}
+
+/**
+ * 입력기가 한 번에(batch edit) 보낸 편집들. 한 타에 여러 번 고치면('속'을 '소'로 고쳐 확정하고 '기'를 조합한다)
+ * 되돌리기 기록을 그 타 전으로 되감고 한 편집('속' → '소기')으로 다시 기록한다. iOS 키보드처럼 한 타가 한 편집이다.
+ */
+private class Keystroke {
+  /** 첫 편집을 기록하기 전 되돌리기 기록 */
+  var history: List<String>? = null
+  var historyIndex = 0
+  var openStep: OpenStep? = null
+  val edits = ArrayList<TextEdit>()
+
+  /** 명령이 끼거나 자리 표시 문자로 글이 밀렸으면 합치지 않는다. */
+  var mergeable = true
 }
 
 class MemoEditorView(context: Context, appContext: AppContext) :
@@ -203,6 +247,8 @@ class MemoEditorView(context: Context, appContext: AppContext) :
   private var historyIndex = 0
   /** 마지막 단계가 아직 이어 쓰는 중이면 그 범위 */
   private var openStep: OpenStep? = null
+  /** 입력기가 한 번에 보내는 중인 편집들 */
+  private var keystroke: Keystroke? = null
   private var lastHistoryState: Pair<Boolean, Boolean>? = null
 
   private val canUndo: Boolean
@@ -398,6 +444,7 @@ class MemoEditorView(context: Context, appContext: AppContext) :
     content?.let { history.add(it) }
     historyIndex = 0
     openStep = null
+    keystroke = null
     emitFormat()
     emitHistory()
   }
@@ -689,6 +736,7 @@ class MemoEditorView(context: Context, appContext: AppContext) :
     val selectionEnd = editText.selectionEnd
     historyIndex = index
     openStep = null
+    keystroke = null
     // 되돌아온 문단을 고친 문단으로 치면 커서가 떠날 때 할 일로 다시 바뀐다.
     activeParagraph = null
 
@@ -965,6 +1013,24 @@ class MemoEditorView(context: Context, appContext: AppContext) :
     if (start < step.start || end != caret) openStep = null
   }
 
+  override fun onBatchEdit(started: Boolean) {
+    if (started) {
+      keystroke = Keystroke()
+      return
+    }
+    val stroke = keystroke ?: return
+    keystroke = null
+    val saved = stroke.history ?: return
+    if (!stroke.mergeable || stroke.edits.size < 2) return
+    val text = editText.text ?: return
+    val edit = combine(text, stroke.edits) ?: return
+    history.clear()
+    history.addAll(saved)
+    historyIndex = stroke.historyIndex
+    openStep = stroke.openStep
+    record(MemoDocument.serialize(text), edit, 0)
+  }
+
   override fun onBackspace(): Boolean {
     val text = editText.text ?: return false
     val start = editText.selectionStart
@@ -1084,6 +1150,14 @@ class MemoEditorView(context: Context, appContext: AppContext) :
       history.add(content)
       historyIndex = 0
       return
+    }
+    keystroke?.let { stroke ->
+      if (stroke.history == null) {
+        stroke.history = history.toList()
+        stroke.historyIndex = historyIndex
+        stroke.openStep = openStep?.copy()
+      }
+      if (edit == null || shift != 0) stroke.mergeable = false else stroke.edits.add(edit)
     }
     history.subList(historyIndex + 1, history.size).clear()
     val step = openStep
