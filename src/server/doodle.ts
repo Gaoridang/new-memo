@@ -4,7 +4,8 @@ import type { JevAnswer } from './jev';
 // 메모 한 줄에서 두들을 붙일 낱말과 그 낱말에 맞는 그림을 고른다. (TypeSafe Pre-parsed value extraction 쿡북 방식)
 // 낱말 후보는 코드가 띄어쓰기로 찾고, Jev는 후보 가운데 하나를 고르기만 한다. 그래서 돌려주는 낱말은 늘 줄에 있는 글자 그대로다.
 // 후보는 조사까지 붙은 어절이다. 그림은 '커피'와 '를' 사이가 아니라 '커피를' 뒤에 온다.
-// 붙여 쓴 어절('청소기칫솔')은 띄어 쓴 것처럼 나눠 묻는다. 칩은 그래도 어절 전체를 감싼다. (편집기가 칩을 어절 단위로 그린다)
+// 붙여 쓴 어절('딸기우유', '청소기칫솔')은 그 속 마지막 두들 낱말로 묻는다. 합성어는 뒤 낱말이 중심이다. (딸기우유는 우유다)
+// 칩은 그래도 어절 전체를 감싼다. (편집기가 칩을 어절 단위로 그린다)
 
 export type DoodleCandidate = { word: string; start: number; length: number };
 // confidence는 낱말 확률 × 그림 확률. 메모 전체를 훑을 때 어느 줄부터 붙일지 정한다.
@@ -37,8 +38,12 @@ const JOINED_TERMS = [
   .filter((term) => /^\p{Script=Hangul}{2,}$/u.test(term))
   .sort((a, b) => b.length - a.length);
 
-/** 어절 속 두들 낱말들과 어절 안의 위치. 둘 이상일 때만 나눈다. ('청소기칫솔' → 청소기, 칫솔 / '커피를' → 나누지 않음) */
-function joinedWords(word: string): { word: string; offset: number }[] {
+/**
+ * 두들 낱말을 둘 이상 붙여 쓴 어절이면 물을 낱말(그 가운데 마지막 낱말)과 어절 안의 위치.
+ * ('딸기우유' → 우유, '청소기칫솔' → 칫솔, '칫솔치약사기' → 치약 / '커피를', '바나나우유' → 없음)
+ * 낱말마다 물으면 Jev가 더 그리기 쉬운 쪽을 골라 '딸기우유'에 딸기를 그렸다.
+ */
+function joinedHead(word: string): { word: string; offset: number } | null {
   const found: { word: string; offset: number }[] = [];
   for (let i = 0; i < word.length; ) {
     const term = JOINED_TERMS.find((candidate) => word.startsWith(candidate, i));
@@ -49,7 +54,7 @@ function joinedWords(word: string): { word: string; offset: number }[] {
       i++;
     }
   }
-  return found.length >= 2 ? found : [];
+  return found.length >= 2 ? found[found.length - 1] : null;
 }
 
 /** 두들을 붙일 수 있는 낱말 후보. start·length는 line 안의 UTF-16 위치다. (JS·NSString·Kotlin String이 같은 단위를 쓴다) */
@@ -66,9 +71,9 @@ export function doodleCandidates(line: string): DoodleCandidate[] {
     const word = token.replace(EDGE_MARKS, '');
     if (!word || LINK.test(word)) continue;
     const start = match.index + token.indexOf(word);
-    const joined = joinedWords(word);
-    if (joined.length > 0) {
-      for (const part of joined) add(part.word, start + part.offset);
+    const head = joinedHead(word);
+    if (head) {
+      add(head.word, start + head.offset);
     } else {
       if (!HAS_LETTER.test(word) || STARTS_WITH_DIGIT.test(word)) continue;
       // 낱말을 선택지 이름으로 쓰므로 'none'과 겹치는 낱말은 뺀다.
