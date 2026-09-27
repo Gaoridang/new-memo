@@ -4,6 +4,7 @@ import type { JevAnswer } from './jev';
 // 메모 한 줄에서 두들을 붙일 낱말과 그 낱말에 맞는 그림을 고른다. (TypeSafe Pre-parsed value extraction 쿡북 방식)
 // 낱말 후보는 코드가 띄어쓰기로 찾고, Jev는 후보 가운데 하나를 고르기만 한다. 그래서 돌려주는 낱말은 늘 줄에 있는 글자 그대로다.
 // 후보는 조사까지 붙은 어절이다. 그림은 '커피'와 '를' 사이가 아니라 '커피를' 뒤에 온다.
+// 붙여 쓴 어절('청소기칫솔')은 띄어 쓴 것처럼 나눠 묻는다. 칩은 그래도 어절 전체를 감싼다. (편집기가 칩을 어절 단위로 그린다)
 
 export type DoodleCandidate = { word: string; start: number; length: number };
 // confidence는 낱말 확률 × 그림 확률. 메모 전체를 훑을 때 어느 줄부터 붙일지 정한다.
@@ -21,21 +22,62 @@ const ENGLISH_STOPWORDS = new Set(
   'a an the to at on in of for and or with from by my your our me is am are be do go it up this that'.split(' '),
 );
 
+// 붙여 쓴 어절을 나눌 때 찾는 낱말: 두들 목록 설명의 한국어 낱말 가운데 두 글자 이상. 긴 낱말부터 맞춰 본다. ('로봇청소기' > '청소기' > '청소')
+// 한 글자 낱말은 다른 낱말 속에 너무 흔해 뺀다. ('배달'의 배, '눈물'의 눈)
+const JOINED_TERMS = [
+  ...new Set(
+    Object.values(DOODLES).flatMap((description) =>
+      description
+        .split(' (')[0]
+        .split('·')
+        .map((term) => term.replace(/\s+/g, '')),
+    ),
+  ),
+]
+  .filter((term) => /^\p{Script=Hangul}{2,}$/u.test(term))
+  .sort((a, b) => b.length - a.length);
+
+/** 어절 속 두들 낱말들과 어절 안의 위치. 둘 이상일 때만 나눈다. ('청소기칫솔' → 청소기, 칫솔 / '커피를' → 나누지 않음) */
+function joinedWords(word: string): { word: string; offset: number }[] {
+  const found: { word: string; offset: number }[] = [];
+  for (let i = 0; i < word.length; ) {
+    const term = JOINED_TERMS.find((candidate) => word.startsWith(candidate, i));
+    if (term) {
+      found.push({ word: term, offset: i });
+      i += term.length;
+    } else {
+      i++;
+    }
+  }
+  return found.length >= 2 ? found : [];
+}
+
 /** 두들을 붙일 수 있는 낱말 후보. start·length는 line 안의 UTF-16 위치다. (JS·NSString·Kotlin String이 같은 단위를 쓴다) */
 export function doodleCandidates(line: string): DoodleCandidate[] {
   const candidates: DoodleCandidate[] = [];
   const seen = new Set<string>();
+  const add = (word: string, start: number) => {
+    if (seen.has(word)) return;
+    seen.add(word);
+    candidates.push({ word, start, length: word.length });
+  };
   for (const match of line.matchAll(/\S+/g)) {
     const token = match[0];
     const word = token.replace(EDGE_MARKS, '');
-    if (!word || !HAS_LETTER.test(word) || STARTS_WITH_DIGIT.test(word) || LINK.test(word)) continue;
-    // 낱말을 선택지 이름으로 쓰므로 'none'과 겹치는 낱말은 뺀다.
-    if (ENGLISH_STOPWORDS.has(word.toLowerCase()) || word.toLowerCase() === NONE || seen.has(word)) continue;
-    seen.add(word);
-    candidates.push({ word, start: match.index + token.indexOf(word), length: word.length });
-    if (candidates.length === MAX_CANDIDATES) break;
+    if (!word || LINK.test(word)) continue;
+    const start = match.index + token.indexOf(word);
+    const joined = joinedWords(word);
+    if (joined.length > 0) {
+      for (const part of joined) add(part.word, start + part.offset);
+    } else {
+      if (!HAS_LETTER.test(word) || STARTS_WITH_DIGIT.test(word)) continue;
+      // 낱말을 선택지 이름으로 쓰므로 'none'과 겹치는 낱말은 뺀다.
+      if (ENGLISH_STOPWORDS.has(word.toLowerCase()) || word.toLowerCase() === NONE) continue;
+      add(word, start);
+    }
+    if (candidates.length >= MAX_CANDIDATES) break;
   }
-  return candidates;
+  return candidates.slice(0, MAX_CANDIDATES);
 }
 
 /** 제목과 주변 줄은 맥락으로만 쓴다. ('눈 건강' 메모의 '눈'은 눈사람이 아니다) */

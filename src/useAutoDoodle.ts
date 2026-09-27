@@ -82,7 +82,7 @@ export function useAutoDoodle(getTitle: () => string, getContent: () => string, 
       if (!canPlace(blocks, index) || !eligible(text) || undone.current.has(text.trim())) return;
 
       const doodle = await suggest(blocks, index, text, getTitle().trim());
-      if (!doodle || declined.current.has(declineKey(doodle.id, doodle.word))) return;
+      if (!doodle || declined.current.has(declineKey(doodle.id, chipWord(text, doodle)))) return;
       whenIdle(async (editor) => {
         if (!decoratedRef.current || !canPlace(memoBlocks(getContent()), index, text)) return;
         const [added] = await editor.setDoodles([{ index, text, ...change(doodle) }], false);
@@ -236,6 +236,10 @@ function removedDoodles(previous: MemoBlock[], next: MemoBlock[]): { line: strin
 
 // 칩 낱말은 띄어쓰기 사이 전체라 앞뒤 문장 부호가 붙어 있을 수 있다. (Jev가 고르는 낱말은 부호를 뗀 것)
 const declineKey = (id: string, word: string) => `${id}:${word.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '')}`;
+
+/** 두들을 붙이면 칩이 감쌀 낱말(띄어쓰기 사이 전체). 붙여 쓴 낱말은 Jev가 일부('청소기칫솔'의 '청소기')를 골라도 칩은 전체다. */
+const chipWord = (line: string, { start, length }: DoodleSuggestion) =>
+  line.slice(0, start).match(/\S*$/)![0] + line.slice(start, start + length) + line.slice(start + length).match(/^\S*/)![0];
 
 /** 한 번에 size개씩 실행한다. 결과는 items 순서대로 */
 async function pool<T, R>(items: T[], size: number, run: (item: T) => Promise<R>): Promise<R[]> {
