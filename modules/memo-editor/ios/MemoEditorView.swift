@@ -3,7 +3,7 @@ import UIKit
 
 /// 되돌리기 한 단계에 담기는 편집의 종류
 private enum EditKind {
-  /// 글자 치기(한글 조합 포함). 낱말 하나를 한 단계로 묶는다.
+  /// 글자 치기(한글 조합 포함). 친 글자 하나(한글은 음절 하나)가 한 단계다.
   case typing
   /// 한 글자씩 지우기. 이어서 지우는 동안 한 단계로 묶는다.
   case deleting
@@ -18,10 +18,23 @@ private func isSpace(_ character: unichar) -> Bool {
   return CharacterSet.whitespacesAndNewlines.contains(scalar)
 }
 
+/// 두 글이 앞에서부터 같은 부분의 길이 (UTF-16). 글자(자소 묶음) 가운데서 끊지 않는다.
+private func commonPrefixLength(_ a: String, _ b: String) -> Int {
+  var length = 0
+  for (x, y) in zip(a, b) {
+    guard x.unicodeScalars.elementsEqual(y.unicodeScalars) else { break }
+    length += x.utf16.count
+  }
+  return length
+}
+
 /// 사용자가 한 번에 고친 글자. 위치는 편집 전 글 기준이다.
+/// 앞부분이 그대로인 글자는 빼고 본다. (입력기가 '청'을 '청ㅅ'으로 바꿔 치워도 'ㅅ' 한 글자를 친 것이다)
 private struct TextEdit {
   let kind: EditKind
   let range: NSRange
+  /// 새로 들어간 글자
+  let inserted: String
   /// 새로 들어간 글자 길이 (UTF-16)
   let insertedLength: Int
   /// 띄어 쓴 뒤 새 낱말을 쓰기 시작하는 편집
@@ -33,21 +46,25 @@ private struct TextEdit {
   /// 여러 글자가 한꺼번에 늘거나 주는 편집(붙여넣기, 선택 지우기, 자동 고침)은 명령으로 본다.
   init(in text: NSString, replacing range: NSRange, with replacement: String) {
     let removed = text.substring(with: range)
-    if replacement == "\n" && range.length == 0 {
+    let same = commonPrefixLength(removed, replacement)
+    let inserted = (replacement as NSString).substring(from: same)
+    let changed = NSRange(location: range.location + same, length: range.length - same)
+    if inserted == "\n" && changed.length == 0 {
       kind = .newline
-    } else if replacement.contains("\n") || abs(replacement.count - removed.count) > 1 {
+    } else if inserted.contains("\n") || abs(replacement.count - removed.count) > 1 {
       kind = .command
-    } else if replacement.isEmpty {
+    } else if inserted.isEmpty {
       kind = .deleting
     } else {
       kind = .typing
     }
-    self.range = range
-    let inserted = replacement as NSString
-    insertedLength = inserted.length
-    insertsWordCharacters = (0..<inserted.length).contains { !isSpace(inserted.character(at: $0)) }
-    startsWord = range.length == 0 && inserted.length > 0 && !isSpace(inserted.character(at: 0))
-      && (range.location == 0 || isSpace(text.character(at: range.location - 1)))
+    self.range = changed
+    self.inserted = inserted
+    let characters = inserted as NSString
+    insertedLength = characters.length
+    insertsWordCharacters = (0..<characters.length).contains { !isSpace(characters.character(at: $0)) }
+    startsWord = changed.length == 0 && characters.length > 0 && !isSpace(characters.character(at: 0))
+      && (changed.location == 0 || isSpace(text.character(at: changed.location - 1)))
   }
 }
 
@@ -55,8 +72,12 @@ private struct TextEdit {
 private struct OpenStep {
   let kind: EditKind
   var start: Int
-  var end: Int
+  /// 치기: 이어 친 글자마다 되돌리기 한 단계씩이다. 단계마다 그 단계까지 친 글이 끝나는 자리이고, 마지막 단계가 지금 문서다.
+  /// 지우기: 비어 있다. (이어 지운 글자는 한 단계다)
+  var ends: [Int] = []
   var hasWordCharacters: Bool
+
+  var end: Int { ends.last ?? start }
 
   /// 치기나 지우기만 다음 편집을 이어 받는다. 줄 바꿈과 명령은 단계를 바로 닫는다.
   init?(beginning edit: TextEdit) {
@@ -64,12 +85,11 @@ private struct OpenStep {
     case .typing:
       kind = .typing
       start = edit.range.location
-      end = edit.range.location + edit.insertedLength
+      ends = [edit.range.location + edit.insertedLength]
       hasWordCharacters = edit.insertsWordCharacters
     case .deleting:
       kind = .deleting
       start = edit.range.location
-      end = edit.range.location
       hasWordCharacters = false
     case .newline, .command:
       return nil
@@ -80,29 +100,15 @@ private struct OpenStep {
   func continues(with edit: TextEdit) -> Bool {
     let editEnd = NSMaxRange(edit.range)
     switch (kind, edit.kind) {
-    case (.typing, .typing):
-      // 쓰던 낱말 안이나 끝에서 이어 쓴다. (한글 조합은 앞 글자를 바꿔 치운다) 띄어 쓴 뒤 새 낱말은 새 단계다.
-      return edit.range.location <= end && editEnd >= start && editEnd <= end
-        && !(edit.startsWord && hasWordCharacters)
-    case (.typing, .deleting):
-      // 방금 친 글자를 지우는 것은 고쳐 쓰는 중이다.
-      return edit.range.location >= start && editEnd <= end
+    case (.typing, .typing), (.typing, .deleting):
+      // 쓰던 자리에서 이어 치거나, 방금 친 글자를 고쳐 쓰거나(한글 조합은 앞 글자를 바꿔 치운다) 지운다.
+      // 띄어 쓴 뒤 새 낱말은 새로 이어 쓴다.
+      return edit.range.location >= start && editEnd == end && !(edit.startsWord && hasWordCharacters)
     case (.deleting, .deleting):
       // 앞으로(백스페이스) 또는 뒤로 이어 지운다.
       return editEnd == start || edit.range.location == start
     default:
       return false
-    }
-  }
-
-  mutating func apply(_ edit: TextEdit) {
-    if kind == .typing {
-      start = min(start, edit.range.location)
-      end += edit.insertedLength - edit.range.length
-      hasWordCharacters = hasWordCharacters || edit.insertsWordCharacters
-    } else {
-      start = edit.range.location
-      end = start
     }
   }
 }
@@ -162,7 +168,7 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
   private var transitions: [MemoBlockTransition] = []
 
   /// 되돌리기 기록. 단계마다 문서 전체(저장 형식 JSON)를 남기고, historyIndex가 지금 문서다.
-  /// 낱말 하나, 이어 지운 글자들, 줄 바꿈, 명령 하나가 각각 한 단계다.
+  /// 친 글자 하나(한글은 음절 하나), 이어 지운 글자들, 줄 바꿈, 명령 하나가 각각 한 단계다.
   private var history: [String] = []
   private var historyIndex = 0
   /// 마지막 단계가 아직 이어 쓰는 중이면 그 범위
@@ -979,7 +985,7 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
     onChangeContent(["content": content, "fromHistory": false])
   }
 
-  /// 바뀐 문서를 되돌리기 기록에 남긴다. 쓰던 자리에 바로 이어지는 편집은 지금 단계에 합치고,
+  /// 바뀐 문서를 되돌리기 기록에 남긴다. 쓰던 자리에서 이어 치면 글자마다 단계를 쌓고, 이어 지우면 지금 단계에 합치고,
   /// 아니면 새 단계를 만든다. 되돌린 뒤 새로 고치면 다시 하기 기록은 버린다.
   private func record(_ content: String, edit: TextEdit?) {
     guard !history.isEmpty else {
@@ -989,24 +995,75 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
     }
     history.removeSubrange((historyIndex + 1)...)
     if let edit, var step = openStep, step.continues(with: edit) {
-      step.apply(edit)
-      history[historyIndex] = content
-      openStep = step
-      if historyIndex > 0 && history[historyIndex - 1] == content {
-        // 이 단계에서 친 글자를 모두 지웠으면 아무것도 바꾸지 않는 단계를 남기지 않는다.
-        history.removeLast()
-        historyIndex -= 1
-        openStep = nil
+      if step.kind == .typing {
+        recordTyping(content, edit: edit, step: &step)
+        openStep = step.ends.isEmpty ? nil : step
+      } else {
+        step.start = edit.range.location
+        history[historyIndex] = content
+        openStep = step
       }
     } else {
-      history.append(content)
-      if history.count > Self.historyLimit {
-        history.removeFirst(history.count - Self.historyLimit)
-      }
-      historyIndex = history.count - 1
+      pushHistory(content)
       openStep = edit.flatMap { OpenStep(beginning: $0) }
     }
     emitHistory()
+  }
+
+  private func pushHistory(_ content: String) {
+    history.append(content)
+    if history.count > Self.historyLimit {
+      history.removeFirst(history.count - Self.historyLimit)
+    }
+    historyIndex = history.count - 1
+  }
+
+  /// 쓰던 자리에서 이어 친 편집을 기록한다. 편집이 고친 글자가 든 단계는 걷어 내고(한글 조합, 방금 친 글자 지우기)
+  /// 새로 들어간 글자마다 단계를 쌓는다. '속' → '소기'처럼 한 번에 두 글자가 되면 '소'까지와 '기'까지 두 단계다.
+  private func recordTyping(_ content: String, edit: TextEdit, step: inout OpenStep) {
+    let location = edit.range.location
+    while let end = step.ends.last, end > location {
+      step.ends.removeLast()
+      // 기록 한도에서 앞 단계가 잘려 나갔으면 걷어 낼 단계가 없다.
+      if historyIndex > 0 {
+        history.removeLast()
+        historyIndex -= 1
+      }
+    }
+    let inserted = NSRange(location: location, length: edit.insertedLength)
+    if inserted.length > 0 {
+      let text = string
+      if NSMaxRange(inserted) <= text.length && text.substring(with: inserted) == edit.inserted {
+        var characterEnd = NSMaxRange(text.rangeOfComposedCharacterSequence(at: inserted.location))
+        while characterEnd < NSMaxRange(inserted) {
+          pushHistory(contentRemoving(NSRange(location: characterEnd, length: NSMaxRange(inserted) - characterEnd)))
+          step.ends.append(characterEnd)
+          characterEnd = NSMaxRange(text.rangeOfComposedCharacterSequence(at: characterEnd))
+        }
+      }
+      pushHistory(content)
+      step.ends.append(NSMaxRange(inserted))
+      step.hasWordCharacters = step.hasWordCharacters || edit.insertsWordCharacters
+    } else if location > step.end {
+      // 걷어 낸 단계에서 앞 글자가 남았다.
+      pushHistory(content)
+      step.ends.append(location)
+    } else {
+      history[historyIndex] = content
+    }
+    if !step.ends.isEmpty && historyIndex > 0 && history[historyIndex - 1] == content {
+      // 조합하던 글자를 원래대로 되돌려 놓았으면 아무것도 바꾸지 않는 단계를 남기지 않는다.
+      history.removeLast()
+      historyIndex -= 1
+      step.ends.removeLast()
+    }
+  }
+
+  /// 지금 문서에서 range의 글자를 뺀 저장 형식
+  private func contentRemoving(_ range: NSRange) -> String {
+    let text = NSMutableAttributedString(attributedString: storage)
+    text.deleteCharacters(in: range)
+    return MemoDocument.serialize(text, trailingBlock: trailingBlock)
   }
 
   private func emitHistory() {
