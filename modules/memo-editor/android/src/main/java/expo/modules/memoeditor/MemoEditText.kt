@@ -15,6 +15,8 @@ import android.widget.EditText
 /** 편집기 뷰가 EditText의 입력 이벤트를 가로채기 위한 통로 */
 interface MemoEditTextListener {
   fun onSelectionChanged(start: Int, end: Int)
+  /** 입력기가 한 번에 보내는 편집(batch edit)이 시작되거나(started) 끝났다. */
+  fun onBatchEdit(started: Boolean)
   fun onBackspace(): Boolean
   /** 입력기가 조합 중인 낱말에서 끝 글자를 지우려 한다. text는 지운 뒤의 조합 글자다. 처리했으면 true */
   fun onComposingBackspace(text: CharSequence): Boolean
@@ -103,6 +105,17 @@ class MemoEditText(context: Context) : EditText(context) {
   override fun onSelectionChanged(selStart: Int, selEnd: Int) {
     super.onSelectionChanged(selStart, selEnd)
     listener?.onSelectionChanged(selStart, selEnd)
+  }
+
+  // 입력기는 한 타에 여러 번 고칠 때 batch edit로 묶는다. (가장 바깥 batch에서만 불린다)
+  override fun onBeginBatchEdit() {
+    super.onBeginBatchEdit()
+    listener?.onBatchEdit(started = true)
+  }
+
+  override fun onEndBatchEdit() {
+    super.onEndBatchEdit()
+    listener?.onBatchEdit(started = false)
   }
 
   // 체크박스를 누르면 커서 이동이나 키보드 없이 체크만 바뀌도록 터치를 가로챈다.
