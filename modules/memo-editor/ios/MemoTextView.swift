@@ -93,6 +93,51 @@ final class MemoUndoManager: UndoManager {
   }
 }
 
+/// 키보드 위 컨트롤 바(RN InputAccessoryView의 내용 뷰)의 높이를 제 안전 영역에서 떼어 낸다.
+///
+/// RN은 내용을 담은 컨테이너를 내용 뷰의 safeAreaLayoutGuide 위아래에 붙여, 컨트롤 바 높이가 '내용 + 제 아래 안전 영역'이 된다.
+/// 키보드를 천천히 끌어 내려 컨트롤 바가 홈 인디케이터 자리 경계에 걸치면 안전 영역이 높이를, 높이가 키보드 창 안의 위치를,
+/// 위치가 다시 안전 영역을 바꿔 키보드 창의 레이아웃이 끝나지 않는다. (앱이 멈추고 키보드가 그 자리에 선다)
+/// 그래서 컨테이너를 내용 뷰 위아래에 바로 붙이고, 홈 인디케이터 자리는 키보드 알림으로 정한 고정 여백으로 비운다.
+private enum AccessoryLayout {
+  static let topID = "MemoAccessory.top"
+  static let bottomID = "MemoAccessory.bottom"
+
+  /// 안전 영역 위아래에 붙은 제약을 내용 뷰 가장자리에 붙는 제약으로 바꾼다. 이미 바꿨으면 바꿀 제약이 없다.
+  static func detachFromSafeArea(_ accessory: UIView) {
+    let guide = accessory.safeAreaLayoutGuide
+    for constraint in accessory.constraints where constraint.isActive {
+      guard let (content, attribute) = edge(of: constraint, pinnedTo: guide) else { continue }
+      constraint.isActive = false
+      let pinned = attribute == .top
+        ? content.topAnchor.constraint(equalTo: accessory.topAnchor)
+        : content.bottomAnchor.constraint(equalTo: accessory.bottomAnchor)
+      pinned.identifier = attribute == .top ? topID : bottomID
+      pinned.priority = constraint.priority
+      pinned.isActive = true
+    }
+  }
+
+  /// 컨테이너 아래에 둘 여백. 컨트롤 바 높이는 '내용 + inset'이다.
+  static func setBottomInset(_ inset: CGFloat, of accessory: UIView) {
+    guard let bottom = accessory.constraints.first(where: { $0.identifier == bottomID }),
+          bottom.constant != -inset else { return }
+    bottom.constant = -inset
+  }
+
+  /// guide의 위나 아래에 같게 붙은 제약이면 붙은 뷰와 그 가장자리
+  private static func edge(
+    of constraint: NSLayoutConstraint, pinnedTo guide: UILayoutGuide
+  ) -> (UIView, NSLayoutConstraint.Attribute)? {
+    let attribute = constraint.firstAttribute
+    guard constraint.relation == .equal, constraint.multiplier == 1, constraint.constant == 0,
+          attribute == constraint.secondAttribute, attribute == .top || attribute == .bottom else { return nil }
+    if constraint.secondItem === guide, let view = constraint.firstItem as? UIView { return (view, attribute) }
+    if constraint.firstItem === guide, let view = constraint.secondItem as? UIView { return (view, attribute) }
+    return nil
+  }
+}
+
 final class MemoTextView: UITextView {
   weak var editor: MemoEditorView?
   let markerView = MemoMarkerView()
@@ -112,13 +157,30 @@ final class MemoTextView: UITextView {
 
   // 키보드가 뜰 때 UIKit이 읽어 키보드와 함께 움직인다. RN의 InputAccessoryView가 가진 뷰를 찾아 쓴다.
   override var inputAccessoryView: UIView? {
-    get {
-      if accessory == nil, let accessoryID, let window {
-        accessory = Self.accessoryView(nativeID: accessoryID, in: window)
-      }
-      return accessory
-    }
+    get { formatBarAccessory() }
     set { accessory = newValue }
+  }
+
+  /// 제목 칸과 함께 쓰는 컨트롤 바. 처음 찾을 때 높이를 제 안전 영역에서 떼어 둔다. (AccessoryLayout)
+  func formatBarAccessory() -> UIView? {
+    if accessory == nil, let accessoryID, let window,
+       let found = Self.accessoryView(nativeID: accessoryID, in: window) {
+      AccessoryLayout.detachFromSafeArea(found)
+      accessory = found
+    }
+    return accessory
+  }
+
+  /// 화면 키보드는 이보다 높다. 키보드 높이에서 컨트롤 바를 뺀 것이 이보다 낮으면 컨트롤 바만 떠 있다.
+  private static let minimumKeyboardHeight: CGFloat = 100
+
+  /// 키보드 알림 때 컨트롤 바 아래에 화면 키보드가 없으면(하드웨어 키보드) 컨트롤 바가 화면 아래에 붙으므로
+  /// 홈 인디케이터 자리를 비운다. 알림 때의 크기로만 정해 키보드를 끌어 내리는 동안에는 바뀌지 않고,
+  /// 여백을 바꿔 다시 오는 알림에서도 여백 크기만큼의 차이로는 판단이 뒤집히지 않는다.
+  func updateAccessoryBottomInset(keyboardFrame: CGRect) {
+    guard keyboardFrame.height > 0, let window, let accessory = formatBarAccessory() else { return }
+    let barOnly = keyboardFrame.height - accessory.bounds.height < Self.minimumKeyboardHeight
+    AccessoryLayout.setBottomInset(barOnly ? window.safeAreaInsets.bottom : 0, of: accessory)
   }
 
   private static func accessoryView(nativeID: String, in view: UIView) -> UIView? {

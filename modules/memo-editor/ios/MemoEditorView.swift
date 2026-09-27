@@ -259,6 +259,8 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
           let end = (info[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue else { return }
     // 크기가 없으면(설정의 '크로스 페이드 전환 선호') 내려간 것이다.
     keyboardFrame = end.height > 0 ? end : nil
+    // 제목 칸의 키보드여도 같은 컨트롤 바가 붙는다. 끌어 내리기 전에 높이를 안전 영역에서 떼어 둔다.
+    textView.updateAccessoryBottomInset(keyboardFrame: end)
     let duration = (info[UIResponder.keyboardAnimationDurationUserInfoKey] as? NSNumber)?.doubleValue ?? 0
     let curve = (info[UIResponder.keyboardAnimationCurveUserInfoKey] as? NSNumber)?.uintValue ?? 0
     // 눌러서 포커스를 받는 중이면 아직 커서가 누른 자리로 옮겨지기 전이다. 옮겨진 뒤에 키보드와 같은 곡선으로 움직인다.
