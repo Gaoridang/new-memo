@@ -36,6 +36,8 @@ const ATTACHED_TO_KEYBOARD = Platform.OS === 'ios';
 const BAR_MARGIN = 10;
 // 본문 끝과 컨트롤 바 사이 간격
 const EDITOR_BAR_GAP = 8;
+// Android: 떠 있는 컨트롤 바가 본문 아래를 가리는 높이. 본문은 이만큼 아래 여백을 두고, 글은 컨트롤 바 뒤로도 비친다.
+const BAR_SPACE = BAR_MARGIN + BAR_HEIGHT + EDITOR_BAR_GAP;
 // iOS: 키보드 위 컨트롤 바 자리의 윗여백. 본문과의 간격이자 컨트롤 바 그림자가 잘리지 않을 자리다.
 const ACCESSORY_TOP_SPACE = 14;
 // 알림과 컨트롤 바 사이 간격
@@ -133,18 +135,13 @@ export function MemoScreen({ memo: initialMemo, listOpen, onOpenList, onNewMemo 
     toastSpace.value = withTiming(toastVisible ? TOAST_HEIGHT + TOAST_GAP : 0, { duration: 180 });
   }, [toastSpace, toastVisible]);
 
-  // 키보드 높이. 본문은 움직임이 끝날 높이(onStart)로 한 번에 맞추고 (보이지 않는 아래쪽이라 프레임마다 맞출 필요가 없다),
-  // Android의 컨트롤 바는 프레임마다(onMove) 키보드를 따라간다.
+  // Android: 키보드 높이. 컨트롤 바와 본문 끝은 프레임마다(onMove) 키보드를 따라간다.
+  // (iOS는 컨트롤 바가 키보드에 붙어 있고, 본문은 키보드에 가려지는 만큼 네이티브에서 스스로 비킨다)
   // useReanimatedKeyboardAnimation은 iOS에서 움직이기 시작할 때 최종값으로 한 번에 바뀌어 키보드와 따로 놀았다.
   const keyboardHeight = useSharedValue(0);
   const keyboardProgress = useSharedValue(0);
-  const keyboardTarget = useSharedValue(0);
   useKeyboardHandler(
     {
-      onStart: (e) => {
-        'worklet';
-        keyboardTarget.value = e.height;
-      },
       onMove: (e) => {
         'worklet';
         keyboardHeight.value = e.height;
@@ -152,13 +149,11 @@ export function MemoScreen({ memo: initialMemo, listOpen, onOpenList, onNewMemo 
       },
       onInteractive: (e) => {
         'worklet';
-        keyboardTarget.value = e.height;
         keyboardHeight.value = e.height;
         keyboardProgress.value = e.progress;
       },
       onEnd: (e) => {
         'worklet';
-        keyboardTarget.value = e.height;
         keyboardHeight.value = e.height;
         keyboardProgress.value = e.progress;
       },
@@ -177,14 +172,13 @@ export function MemoScreen({ memo: initialMemo, listOpen, onOpenList, onNewMemo 
   const toastStyle = useAnimatedStyle(() => ({
     transform: [{ translateY: barTranslate.value - BAR_HEIGHT - TOAST_GAP }],
   }));
-  // 본문은 컨트롤 바 바로 위에서 끝나도록 아래 공간을 맞춘다.
+  // Android: 본문은 키보드 바로 위까지 닿고, 떠 있는 컨트롤 바 자리는 본문의 아래 여백(insetBottom)이다.
+  // 본문 끝이 프레임마다 키보드를 따라가 빈자리가 먼저 생기지 않고, 커서 줄도 키보드와 함께 올라간다.
+  // 컨트롤 바가 없으면 본문을 그 여백만큼 화면 아래로 늘린다. 글이 보이는 끝은 그대로이고 여백의 글은 화면 끝까지 비친다.
   const bottomSpaceStyle = useAnimatedStyle(() => {
-    const keyboard = keyboardTarget.value;
-    // iOS의 키보드 높이에는 위에 붙은 컨트롤 바(와 알림)가 이미 들어 있다.
-    if (ATTACHED_TO_KEYBOARD) return { height: keyboard > 0 ? keyboard : insets.bottom };
-    const barSpace = BAR_MARGIN + BAR_HEIGHT + EDITOR_BAR_GAP;
-    const below = keyboard > 0 ? keyboard + barSpace : insets.bottom + docked.value * barSpace;
-    return { height: below + toastSpace.value };
+    const barGone = (1 - keyboardProgress.value) * (insets.bottom - BAR_SPACE * (1 - docked.value));
+    const below = keyboardHeight.value + barGone + toastSpace.value;
+    return { height: Math.max(below, 0), marginTop: Math.min(below, 0) };
   }, [insets.bottom]);
 
   const handleFormat = useCallback(
@@ -203,11 +197,12 @@ export function MemoScreen({ memo: initialMemo, listOpen, onOpenList, onNewMemo 
     else if (focusedField === 'title') titleRef.current?.blur();
   }, [focusedField]);
 
-  // 목록이 방금 고친 제목·본문을 보여주도록 먼저 저장하고 연다.
+  // 누르자마자 움직이도록 목록부터 열고, 목록이 방금 고친 제목·본문을 보여주도록 같은 차례에 저장한다.
+  // (목록은 이 차례가 끝난 뒤에 다시 그려진다)
   const openList = useCallback(() => {
+    onOpenList();
     dismissKeyboard();
     flush();
-    onOpenList();
   }, [dismissKeyboard, flush, onOpenList]);
 
   // 지금 메모를 저장해 두고 빈 메모로 바꾼다. 키보드는 새 메모의 입력칸을 눌러야 올라온다.
@@ -321,6 +316,7 @@ export function MemoScreen({ memo: initialMemo, listOpen, onOpenList, onNewMemo 
         placeholderColor={colors.placeholder}
         insetHorizontal={SIDE_PADDING}
         insetTop={14}
+        insetBottom={ATTACHED_TO_KEYBOARD ? 0 : BAR_SPACE}
         accessoryID={accessoryID}
         doodleArt={autoDoodle.art}
         onChangeContent={(event) => {
@@ -348,10 +344,9 @@ export function MemoScreen({ memo: initialMemo, listOpen, onOpenList, onNewMemo 
           afterBodyBlur.current?.();
         }}
       />
-      <Animated.View style={bottomSpaceStyle} />
 
       {ATTACHED_TO_KEYBOARD ? (
-        // 제목이나 본문을 편집할 때만 키보드와 함께 나타난다.
+        // 제목이나 본문을 편집할 때만 키보드와 함께 나타난다. 본문은 화면 끝까지 닿아 있어 컨트롤 바 둘레로 글이 비친다.
         <InputAccessoryView nativeID={accessoryID}>
           <View style={styles.accessory}>
             {toast.toast && <Toast toast={toast.toast} />}
@@ -360,6 +355,7 @@ export function MemoScreen({ memo: initialMemo, listOpen, onOpenList, onNewMemo 
         </InputAccessoryView>
       ) : (
         <>
+          <Animated.View style={bottomSpaceStyle} />
           {editing && toast.toast && (
             <Animated.View style={[styles.barDock, toastStyle]}>
               <Toast toast={toast.toast} />

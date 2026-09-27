@@ -131,6 +131,9 @@ class MemoEditorModule : Module() {
       Prop("insetTop") { view: MemoEditorView, value: Double? ->
         view.insetTop = (value ?: 14.0).toFloat()
       }
+      Prop("insetBottom") { view: MemoEditorView, value: Double? ->
+        view.insetBottom = (value ?: 0.0).toFloat()
+      }
       // iOS에서 키보드 위에 붙일 컨트롤 바. Android에는 그런 자리가 없어 JS가 키보드를 따라 띄운다.
       Prop("accessoryID") { _: MemoEditorView, _: String? -> }
       Prop("doodleArt") { view: MemoEditorView, value: List<DoodleArtRecord>? ->
