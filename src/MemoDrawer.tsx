@@ -1,4 +1,4 @@
-import { router, useGlobalSearchParams } from 'expo-router';
+import { router, useFocusEffect, useGlobalSearchParams } from 'expo-router';
 import { createContext, memo, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { BackHandler, Pressable, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
@@ -71,7 +71,10 @@ export const useMemoDrawer = () => useContext(MemoDrawerContext);
 export function MemoDrawer({ children }: { children: ReactNode }) {
   const { width } = useWindowDimensions();
   const listWidth = width - MEMO_PEEK;
-  const { id: currentId } = useGlobalSearchParams<{ id?: string }>();
+  const { id: routeId } = useGlobalSearchParams<{ id?: string }>();
+  // 설정 화면이 위에 떠 있는 동안은 주소에 메모가 없다. 그동안에도 목록은 보던 메모를 표시한다.
+  const [currentId, setCurrentId] = useState(routeId);
+  if (routeId && routeId !== currentId) setCurrentId(routeId);
   const [open, setOpen] = useState(false);
   // 목록이 드러난 만큼. 0이면 메모가 화면을 덮고 1이면 목록이 열려 있다. (화면 폭이 바뀌어도 그대로다)
   const progress = useSharedValue(0);
@@ -128,15 +131,17 @@ export function MemoDrawer({ children }: { children: ReactNode }) {
   const memoStyle = useAnimatedStyle(() => ({ transform: [{ translateX: progress.get() * listWidth }] }));
   const dimStyle = useAnimatedStyle(() => ({ opacity: progress.get() }));
 
-  // Android 뒤로 가기는 목록부터 닫는다.
-  useEffect(() => {
-    if (!open) return;
-    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
-      slide(false);
-      return true;
-    });
-    return () => subscription.remove();
-  }, [open, slide]);
+  // Android 뒤로 가기는 목록부터 닫는다. 설정 화면이 위에 떠 있으면 설정 화면부터 닫히도록 그동안은 듣지 않는다.
+  useFocusEffect(
+    useCallback(() => {
+      if (!open) return;
+      const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+        slide(false);
+        return true;
+      });
+      return () => subscription.remove();
+    }, [open, slide]),
+  );
 
   const openMemo = useCallback(
     (id: string, keepListOpen = false) => {
