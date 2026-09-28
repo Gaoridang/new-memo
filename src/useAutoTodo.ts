@@ -13,8 +13,6 @@ import { memoBlocks, nearbyLines, updateSavedMemo, type MemoBlock } from './memo
 import { loadSettings, saveSettings } from './settings';
 import type { ShowToast } from './Toast';
 
-// 타이핑이 이만큼 멈췄을 때만 문단을 바꾼다. 한글을 조합하는 중에 서식을 바꾸면 글자가 깨질 수 있다.
-const IDLE_MS = 700;
 const MIN_LENGTH = 2;
 // 판단에 함께 보내는 주변 줄 (위로 몇 줄, 아래로 몇 줄)
 const NEARBY_BEFORE = 3;
@@ -34,8 +32,8 @@ const PASTE_BLOCKS: Partial<Record<Exclude<PasteKind, null>, MemoBlockKind>> = {
   todo: 'checkbox',
 };
 
-/** 입력이 멈추면 편집기에서 할 일(apply). 그 전에 화면이 닫히면 저장된 메모에서 대신 한다(save). */
-type IdleJob = { apply: (editor: MemoEditorHandle) => void; save: () => void };
+/** 답이 오면 편집기에서 할 일(apply). 그 전에 화면이 닫혔으면 저장된 메모에서 대신 한다(save). */
+type Job = { apply: (editor: MemoEditorHandle) => void; save: () => void };
 
 /**
  * Jev로 메모 쓰기를 돕는다. 켜 두면
@@ -56,67 +54,35 @@ export function useAutoTodo(
 ) {
   const [enabled, setEnabled] = useState(() => loadSettings().autoTodo);
   const enabledRef = useRef(enabled);
-  const lastEditAt = useRef(0);
   const verdicts = useRef(new Map<string, TodoVerdict>());
   const undone = useRef(new Set<string>());
   // 줄 글자 → 알아낸 마감일(날짜가 없으면 null). 이미 아는 줄은 다시 묻지 않는다.
   const knownDues = useRef(new Map<string, string | null>());
   const dueLookups = useRef(new Set<string>());
-  const timers = useRef(new Set<ReturnType<typeof setTimeout>>());
   const mounted = useRef(true);
-  const waiting = useRef(new Set<IdleJob>());
-
-  const later = useCallback((callback: () => void, ms: number) => {
-    const timer = setTimeout(() => {
-      timers.current.delete(timer);
-      callback();
-    }, ms);
-    timers.current.add(timer);
-  }, []);
 
   useEffect(() => {
     mounted.current = true;
-    const pending = timers.current;
-    const jobs = waiting.current;
     return () => {
       mounted.current = false;
-      for (const timer of pending) clearTimeout(timer);
-      pending.clear();
-      // 입력이 멈추기를 기다리던 변환은 저장된 메모에 반영한다. 화면의 마지막 자동 저장보다 늦게 쓰도록 한 박자 미룬다.
-      const unfinished = [...jobs];
-      jobs.clear();
-      if (unfinished.length > 0 && enabledRef.current) {
-        setTimeout(() => {
-          for (const job of unfinished) job.save();
-        }, 0);
-      }
     };
   }, []);
 
   /**
-   * 타이핑이 멈추면 편집기에서 한 번 실행한다. 그 전에 화면이 닫히면 저장된 메모에서 한다.
-   * 그 사이 기능을 껐으면 하지 않는다.
+   * 답이 오면 편집기에서 바로 한다. 다음 줄을 쓰는 중이어도 기다리지 않는다. (조합 중인 한글은 편집기가 끊지 않는다)
+   * 그 전에 화면이 닫혔으면 저장된 메모에서 한다. 그 사이 기능을 껐으면 하지 않는다.
    */
-  const whenIdle = useCallback(
-    (job: IdleJob) => {
+  const run = useCallback(
+    (job: Job) => {
+      if (!enabledRef.current) return;
       if (!mounted.current) {
-        if (enabledRef.current) job.save();
+        job.save();
         return;
       }
-      waiting.current.add(job);
-      const attempt = () => {
-        const wait = IDLE_MS - (Date.now() - lastEditAt.current);
-        if (wait > 0) {
-          later(attempt, wait);
-          return;
-        }
-        waiting.current.delete(job);
-        const editor = editorRef.current;
-        if (editor && enabledRef.current) job.apply(editor);
-      };
-      attempt();
+      const editor = editorRef.current;
+      if (editor) job.apply(editor);
     },
-    [editorRef, later],
+    [editorRef],
   );
 
   /** 알아낸 마감일을 기억한다. 화면이 닫혔으면 저장된 메모에 적는다. */
@@ -177,12 +143,12 @@ export function useAutoTodo(
       if (isTodo || maybe) knownDues.current.set(line, due);
       if (!isTodo) return;
       const change = { index, text, from: 'paragraph', to: 'checkbox' } as const;
-      whenIdle({
+      run({
         apply: (editor) => convertTodo(editor, change, due),
         save: () => updateSavedMemo(memoId, [change], due ? { [line]: due } : {}),
       });
     },
-    [getContent, getTitle, lookUpDue, memoId, whenIdle],
+    [getContent, getTitle, lookUpDue, memoId, run],
   );
 
   const formatPaste = useCallback(
@@ -197,7 +163,7 @@ export function useAutoTodo(
         return [{ index: start + i, text: block.text, from: 'paragraph' as const, to: kind }];
       });
       if (changes.length === 0) return;
-      whenIdle({
+      run({
         // 한 번에 바꿔야 되돌리기 한 번으로 모두 돌아간다. 그 사이 사용자가 고친 줄은 에디터가 건너뛴다.
         // 할 일이 된 줄의 마감일('금요일까지 세탁소 들르기')은 onChangeContent가 찾는다.
         apply: async (editor) => {
@@ -211,7 +177,7 @@ export function useAutoTodo(
         },
       });
     },
-    [getTitle, lookUpDue, memoId, whenIdle],
+    [getTitle, lookUpDue, memoId, run],
   );
 
   /**
@@ -220,7 +186,6 @@ export function useAutoTodo(
    */
   const onChangeContent = useCallback(
     (previous: string, next: string, fromHistory: boolean) => {
-      lastEditAt.current = Date.now();
       const before = memoBlocks(previous);
       const after = memoBlocks(next);
       if (fromHistory) {
