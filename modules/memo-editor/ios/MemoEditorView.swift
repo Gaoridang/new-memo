@@ -487,7 +487,7 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
     let selection = textView.selectedRange
     // 본문에서 쓰고 있는 문단을 바꿀 때만 한글 조합을 끝낸다. 다른 문단은 서식만 바뀌고 글자와 커서는 그대로라,
     // 다음 줄을 쓰는 중에 바로 바꿔도 조합 중인 글자가 끊기지 않는다. (두들을 붙일 때와 같다)
-    let caretParagraphs = paragraphs(touching: selection)
+    let caretParagraphs = self.paragraphs(touching: selection)
     if textView.isFirstResponder, converting.contains(where: { caretParagraphs.contains($0.paragraph) }) {
       endKeyboardComposition()
     }
