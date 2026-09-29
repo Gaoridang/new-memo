@@ -196,11 +196,11 @@ export function updateSavedMemo(id: string, changes: SavedBlockChange[], dues: R
   }
 }
 
-// doodle은 문단에 붙은 두들 (없으면 null)
-export type MemoBlock = { type: string; checked: boolean; text: string; doodle: MemoDoodle | null };
+// doodles는 문단의 낱말마다 붙은 두들 (문서 순서, 없으면 빈 배열)
+export type MemoBlock = { type: string; checked: boolean; text: string; doodles: MemoDoodle[] };
 
-/** 두들 이름과 두들이 붙은 낱말 */
-export type MemoDoodle = { id: string; word: string };
+/** 두들 이름, 두들이 붙은 낱말, 그 낱말이 문단 글자에서 시작하는 자리(UTF-16) */
+export type MemoDoodle = { id: string; word: string; start: number };
 
 type DocumentRun = { text?: unknown; doodle?: unknown };
 type DocumentBlock = { type?: unknown; checked?: unknown; runs?: DocumentRun[] };
@@ -211,15 +211,25 @@ const runText = (run: DocumentRun) => (typeof run.text === 'string' ? run.text :
 
 const documentBlockText = (block: DocumentBlock) => (block.runs ?? []).map(runText).join('');
 
-// 문단의 첫 두들. 두들은 낱말의 글자에만 표시되고, 서식이 섞인 낱말은 여러 조각으로 나뉜다.
-function documentBlockDoodle(block: DocumentBlock): MemoDoodle | null {
-  const runs = block.runs ?? [];
-  const first = runs.findIndex((run) => typeof run.doodle === 'string');
-  if (first === -1) return null;
-  const id = runs[first].doodle as string;
-  let word = '';
-  for (let i = first; i < runs.length && runs[i].doodle === id; i++) word += runText(runs[i]);
-  return { id, word };
+// 문단의 두들들. 두들은 낱말의 글자에만 표시되고, 서식이 섞인 낱말은 이어진 여러 조각으로 나뉜다.
+function documentBlockDoodles(block: DocumentBlock): MemoDoodle[] {
+  const doodles: MemoDoodle[] = [];
+  // 앞 조각이 두들 낱말이었는지. 두들이 없는 조각(띄어쓰기)이 끼면 같은 그림이어도 다른 낱말이다.
+  let continued = false;
+  let offset = 0;
+  for (const run of block.runs ?? []) {
+    const text = runText(run);
+    const id = typeof run.doodle === 'string' ? run.doodle : null;
+    const last = doodles[doodles.length - 1];
+    if (id && continued && last.id === id) {
+      last.word += text;
+    } else if (id) {
+      doodles.push({ id, word: text, start: offset });
+    }
+    continued = id !== null;
+    offset += text.length;
+  }
+  return doodles;
 }
 
 // 에디터 문서의 문단들. 서식은 빼고 글자와 문단 종류만 남긴다.
@@ -231,7 +241,7 @@ export function memoBlocks(content: string): MemoBlock[] {
       type: documentBlockType(block),
       checked: block.checked === true,
       text: documentBlockText(block),
-      doodle: documentBlockDoodle(block),
+      doodles: documentBlockDoodles(block),
     }));
   } catch {
     return [];

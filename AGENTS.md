@@ -34,7 +34,7 @@ Run lint and typecheck before declaring any task done.
     - `due+api.ts` — due date of a line that is already a to-do (checkboxes the user made or edited, pasted to-dos)
     - `structure+api.ts` — list/step/to-do shape of each pasted line
     - `search+api.ts` — which memo line answers a question
-    - `doodle+api.ts` — which word in a line gets a doodle, and which one (catalog in `src/doodles/catalog.ts`; art and style sets in `src/doodles/art.ts`, `presets.ts`)
+    - `doodle+api.ts` — which words in a line get a doodle, and which one each (a line can carry several; catalog in `src/doodles/catalog.ts`; art and style sets in `src/doodles/art.ts`, `presets.ts`)
 - Import `router`, `Slot`, and `useLocalSearchParams` from `expo-router`. The app root is wrapped in `GestureHandlerRootView` (the drawer uses react-native-gesture-handler). Docs: https://docs.expo.dev/router/introduction.md
 
 ## Editor & keyboard

@@ -501,24 +501,26 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
     return applied
   }
 
-  /// 문단마다 내용이 text이고 그 자리의 낱말이 word일 때만 두들을 붙인다. 낱말은 두들과 함께 칩이 되며 차례로 나타난다.
-  /// 한 번에 붙인 것은 되돌리기 한 번으로 떨어진다. 이미 두들이 있는 문단은 건너뛴다.
-  /// 글자는 그대로라 커서와 한글 조합은 건드리지 않는다. 붙인 문단마다 true를 돌려준다.
+  /// 내용이 text인 문단의 그 자리 낱말이 word일 때만 두들을 붙인다. 낱말은 두들과 함께 칩이 되며 차례로 나타난다.
+  /// 한 문단에 여러 낱말을 붙일 수 있다. 이미 두들이 붙은 낱말(칩이 감싸는 띄어쓰기 사이 전체)은 건너뛴다.
+  /// 한 번에 붙인 것은 되돌리기 한 번으로 떨어진다.
+  /// 글자는 그대로라 커서와 한글 조합은 건드리지 않는다. 붙인 낱말마다 true를 돌려준다.
   /// explicit은 사용자가 버튼을 눌러 붙이는 것이다. 자동으로 붙일 때는 되돌린 뒤(다시 하기가 남아 있으면) 붙이지 않는다.
   func setDoodles(_ changes: [DoodleChange], explicit: Bool) -> [Bool] {
     guard explicit || !canRedo else { return changes.map { _ in false } }
     let paragraphs = string.memoParagraphs()
+    // 이번에 두들을 붙이는 낱말들(띄어쓰기 사이 전체의 시작 자리). 같은 낱말에 두 번 붙이지 않는다.
     var used = Set<Int>()
     let targets: [NSRange?] = changes.map { change in
-      guard change.index >= 0, change.index < paragraphs.count, change.start >= 0, change.length > 0,
-            !used.contains(change.index) else { return nil }
+      guard change.index >= 0, change.index < paragraphs.count, change.start >= 0, change.length > 0 else { return nil }
       let content = string.memoContentRange(of: paragraphs[change.index])
       let word = NSRange(location: content.location + change.start, length: change.length)
       guard NSMaxRange(word) <= NSMaxRange(content),
             string.substring(with: content) == change.text,
             string.substring(with: word) == change.word,
-            !MemoDoodles.hasMark(in: storage, range: content) else { return nil }
-      used.insert(change.index)
+            let token = MemoDoodles.word(in: string, touching: word),
+            !MemoDoodles.hasMark(in: storage, range: token),
+            used.insert(token.location).inserted else { return nil }
       return word
     }
     let applied = targets.map { $0 != nil }
