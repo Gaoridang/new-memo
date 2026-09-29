@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AccessibilityInfo, Alert } from 'react-native';
 
-import type { MemoDoodleChange, MemoLeaveParagraphEvent } from '../modules/memo-editor';
-import { DOODLES } from './doodles/catalog';
+import type { MemoDoodleChange } from '../modules/memo-editor';
 import { doodleArt } from './doodles/presets';
 import { DoodleIcon } from './icons';
 import { suggestDoodles, type DoodleSuggestion } from './jevApi';
-import { memoBlocks, nearbyLines, type MemoBlock, type MemoDoodle } from './memoStorage';
+import { memoBlocks, nearbyLines, type MemoBlock } from './memoStorage';
 import { loadSettings, saveSettings, useSettings } from './settings';
 import type { ShowToast } from './Toast';
 import type { EditorIdle } from './useEditorIdle';
@@ -23,30 +22,23 @@ const NEARBY_BEFORE = 3;
 const NEARBY_AFTER = 2;
 
 const CONSENT =
-  '두들을 누르면 이 메모의 줄들과 제목을 TypeSafe AI(Jev)로 보내 그림으로 그릴 낱말을 찾고, 그 낱말을 작은 그림과 함께 칩으로 바꿔요. 두들을 붙인 메모는 새로 쓴 줄도 다 쓰고 넘어가면 같은 방법으로 찾아요. 그림 모양(파스텔, 스티커)은 설정에서 고를 수 있어요.';
+  '두들을 누르면 이 메모의 줄들과 제목을 TypeSafe AI(Jev)로 보내 그림으로 그릴 낱말을 찾고, 그 낱말을 작은 그림과 함께 칩으로 바꿔요. 글을 쓰는 사이에는 붙이지 않으니, 새로 쓴 줄에 붙이려면 다시 눌러 주세요. 그림 모양(파스텔, 스티커)은 설정에서 고를 수 있어요.';
 
 type Pick = DoodleSuggestion & { index: number; text: string };
 
 /**
  * 두들: 메모에서 그림으로 그릴 만한 낱말을 Jev가 고르면, 그 낱말을 그림과 함께 칩으로 바꾼다. 그림은 낱말마다 붙는다.
- * - 두들 버튼은 붙이기만 한다. 메모를 훑어 아직 두들이 없는 낱말마다 붙인다. 그림 세트는 설정 화면에서 고른다.
- * - 두들이 붙은 메모에서는 새로 쓴 줄도 다 쓰고 넘어가면 붙인다. 알림은 띄우지 않고 되돌리기로 뗄 수 있다.
+ * 두들은 버튼을 눌렀을 때만 붙는다. 글을 쓰거나 줄을 넘어가는 사이에는 붙이지 않는다.
+ * - 두들 버튼은 붙이기만 한다. 메모를 훑어 아직 두들이 없는 낱말마다 한 번에 붙인다. 그림 세트는 설정 화면에서 고른다.
  * 두들은 메모 내용이라 붙이는 일은 되돌리기 한 번으로 돌아간다. 떼려면 칩 바로 뒤에서 지운다.
- * 되돌리기나 지우기로 뗀 두들은 이 화면에서 그 줄과 그 낱말에 다시 붙이지 않는다.
  */
-export function useAutoDoodle(getTitle: () => string, getContent: () => string, idle: EditorIdle, showToast: ShowToast) {
+export function useDoodles(getTitle: () => string, getContent: () => string, idle: EditorIdle, showToast: ShowToast) {
   const style = useSettings().doodleStyle;
-  const [initiallyDecorated] = useState(() => hasDoodles(memoBlocks(getContent())));
   const [scanning, setScanning] = useState(false);
-  // 두들이 붙은 메모에서만 새로 쓴 줄에도 붙인다.
-  const decoratedRef = useRef(initiallyDecorated);
   const scanningRef = useRef(false);
   // 훑는 사이 화면이 닫히거나 새로 훑으면 늦게 온 답은 버린다.
   const scanId = useRef(0);
   const suggestions = useRef(new Map<string, DoodleSuggestion[]>());
-  // 두들을 뗀 줄(글자 그대로)과, 뗀 두들(그림과 낱말). 줄을 고쳐 써도 같은 낱말에 같은 그림을 다시 붙이지 않는다.
-  const undone = useRef(new Set<string>());
-  const declined = useRef(new Set<string>());
   const { whenIdle } = idle;
 
   useEffect(
@@ -74,31 +66,6 @@ export function useAutoDoodle(getTitle: () => string, getContent: () => string, 
       return answer;
     },
     [],
-  );
-
-  const onLeaveParagraph = useCallback(
-    async ({ index, text }: MemoLeaveParagraphEvent) => {
-      if (!decoratedRef.current || scanningRef.current) return;
-      // 줄을 나누며 떠나면 본문 변경보다 이 알림이 먼저 올 수 있어, 줄 내용은 붙이기 직전에 확인한다.
-      const blocks = memoBlocks(getContent());
-      if (!blocks[index] || !eligible(text) || undone.current.has(text.trim())) return;
-
-      const doodles = await suggest(blocks, index, text, getTitle().trim());
-      if (!doodles?.length) return;
-      whenIdle(async (editor) => {
-        if (!decoratedRef.current) return;
-        const current = memoBlocks(getContent());
-        const room = MAX_PER_MEMO - countDoodles(current);
-        const picks = placeable(current[index], text, doodles)
-          .filter((doodle) => !declined.current.has(declineKey(doodle.id, chipWord(text, doodle))))
-          .slice(0, Math.max(0, room));
-        if (picks.length === 0) return;
-        const applied = await editor.setDoodles(picks.map((doodle) => ({ index, text, ...change(doodle) })), false);
-        // 화면에는 알림을 띄우지 않으니 화면 읽기 사용자에게만 알린다.
-        announce(picks.filter((_, i) => applied[i]));
-      });
-    },
-    [getContent, getTitle, suggest, whenIdle],
   );
 
   /**
@@ -156,7 +123,7 @@ export function useAutoDoodle(getTitle: () => string, getContent: () => string, 
   }, [getContent, getTitle, setBusy, showToast, suggest, whenIdle]);
 
   /**
-   * 두들 버튼. 묻지 않고 메모를 훑어 두들이 없는 줄(새로 쓴 줄, 답을 받지 못한 줄)에 붙인다.
+   * 두들 버튼. 묻지 않고 메모를 훑어 두들이 없는 낱말(새로 쓴 줄, 답을 받지 못한 줄)에 붙인다.
    * 처음 한 번만 메모 내용을 보내도 되는지 묻는다.
    */
   const press = useCallback(() => {
@@ -177,22 +144,10 @@ export function useAutoDoodle(getTitle: () => string, getContent: () => string, 
     ]);
   }, [scan]);
 
-  /** 본문이 바뀔 때마다 부른다. 두들이 있는 메모인지 살피고, 되돌리기나 지우기로 두들이 떨어진 줄과 두들은 기억해 둔다. */
-  const onChangeContent = useCallback((previous: string, next: string) => {
-    const blocks = memoBlocks(next);
-    decoratedRef.current = hasDoodles(blocks);
-    for (const { line, doodle } of removedDoodles(memoBlocks(previous), blocks)) {
-      undone.current.add(line);
-      declined.current.add(declineKey(doodle.id, doodle.word));
-    }
-  }, []);
-
   const art = useMemo(() => doodleArt(style), [style]);
 
-  return { scanning, art, press, onLeaveParagraph, onChangeContent };
+  return { scanning, art, press };
 }
-
-const hasDoodles = (blocks: MemoBlock[]) => blocks.some((block) => block.doodles.length > 0);
 
 const countDoodles = (blocks: MemoBlock[]) => blocks.reduce((sum, block) => sum + block.doodles.length, 0);
 
@@ -211,35 +166,6 @@ function placeable<T extends DoodleSuggestion>(block: MemoBlock | undefined, tex
   );
 }
 
-/** 알림 문구. 하나면 그 낱말을, 여럿이면 개수를 말한다. */
-function announce(added: DoodleSuggestion[]) {
-  if (added.length === 0) return;
-  AccessibilityInfo.announceForAccessibility(
-    added.length === 1
-      ? `${added[0].word} 옆에 ${doodleName(added[0].id)} 두들을 붙였어요`
-      : `낱말 ${added.length}개를 두들로 바꿨어요`,
-  );
-}
-
-/** 글자는 그대로인데 두들이 떨어진 줄들과 떨어진 두들 (되돌리기, 칩 뒤에서 지우기) */
-function removedDoodles(previous: MemoBlock[], next: MemoBlock[]): { line: string; doodle: MemoDoodle }[] {
-  const had = new Map<string, MemoDoodle[]>();
-  for (const block of previous) if (block.doodles.length > 0) had.set(block.text.trim(), block.doodles);
-  return next.flatMap((block) => {
-    const line = block.text.trim();
-    // 같은 줄의 같은 자리에 같은 그림이 남아 있으면 그대로다.
-    const kept = new Set(block.doodles.map((doodle) => `${doodle.id}:${doodle.start}`));
-    return (had.get(line) ?? []).filter((doodle) => !kept.has(`${doodle.id}:${doodle.start}`)).map((doodle) => ({ line, doodle }));
-  });
-}
-
-// 칩 낱말은 띄어쓰기 사이 전체라 앞뒤 문장 부호가 붙어 있을 수 있다. (Jev가 고르는 낱말은 부호를 뗀 것)
-const declineKey = (id: string, word: string) => `${id}:${word.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '')}`;
-
-/** 두들을 붙이면 칩이 감쌀 낱말(띄어쓰기 사이 전체). 붙여 쓴 낱말은 Jev가 일부('청소기칫솔'의 '청소기')를 골라도 칩은 전체다. */
-const chipWord = (line: string, { start, length }: DoodleSuggestion) =>
-  line.slice(0, start).match(/\S*$/)![0] + line.slice(start, start + length) + line.slice(start + length).match(/^\S*/)![0];
-
 /** 한 번에 size개씩 실행한다. 결과는 items 순서대로 */
 async function pool<T, R>(items: T[], size: number, run: (item: T) => Promise<R>): Promise<R[]> {
   const results: R[] = new Array(items.length);
@@ -254,5 +180,3 @@ async function pool<T, R>(items: T[], size: number, run: (item: T) => Promise<R>
   );
   return results;
 }
-
-const doodleName = (id: keyof typeof DOODLES) => DOODLES[id].split(/[·(]/)[0].trim();

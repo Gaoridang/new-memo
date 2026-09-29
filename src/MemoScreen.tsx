@@ -23,9 +23,9 @@ import { holdMemo, memoBlocks, type Memo } from './memoStorage';
 import { toolbarLayout, useSettings } from './settings';
 import { colors } from './theme';
 import { Toast, TOAST_HEIGHT, useToast } from './Toast';
-import { useAutoDoodle } from './useAutoDoodle';
 import { useAutoTodo } from './useAutoTodo';
 import { useAutosave } from './useAutosave';
+import { useDoodles } from './useDoodles';
 import { useEditorIdle } from './useEditorIdle';
 
 // iOS는 컨트롤 바를 키보드의 inputAccessoryView로 붙여 시스템이 키보드와 한 몸으로 움직이게 한다.
@@ -107,7 +107,7 @@ export function MemoScreen({ memo: initialMemo, listOpen, onOpenList, onNewMemo 
   const idle = useEditorIdle(editorRef);
   const getDues = useCallback(() => dues.current, []);
   const autoTodo = useAutoTodo(editorRef, initialMemo.id, getTitle, getContent, getDues, setDue, toast.show);
-  const autoDoodle = useAutoDoodle(getTitle, getContent, idle, toast.show);
+  const doodles = useDoodles(getTitle, getContent, idle, toast.show);
   // 이 화면이 메모를 연 동안에는, 먼저 닫힌 화면에서 늦게 끝난 자동 정리가 저장 파일을 고치지 않는다. (자동 저장이 덮어쓴다)
   useEffect(() => holdMemo(initialMemo.id), [initialMemo.id]);
   // 제목 칸과 본문이 함께 쓰는 키보드 위 컨트롤 바 (iOS). 화면마다 달라야 다른 메모 화면의 것을 찾지 않는다.
@@ -253,10 +253,10 @@ export function MemoScreen({ memo: initialMemo, listOpen, onOpenList, onNewMemo 
       formatState={formatState}
       formattingEnabled={barField === 'body'}
       autoTodoEnabled={autoTodo.enabled}
-      doodling={autoDoodle.scanning}
+      doodling={doodles.scanning}
       onFormat={handleFormat}
       onToggleAutoTodo={autoTodo.toggle}
-      onPressDoodles={autoDoodle.press}
+      onPressDoodles={doodles.press}
       onDismissKeyboard={dismissKeyboard}
     />
   );
@@ -317,20 +317,16 @@ export function MemoScreen({ memo: initialMemo, listOpen, onOpenList, onNewMemo 
         insetTop={14}
         insetBottom={ATTACHED_TO_KEYBOARD ? 0 : BAR_SPACE}
         accessoryID={accessoryID}
-        doodleArt={autoDoodle.art}
+        doodleArt={doodles.art}
         onChangeContent={(event) => {
           const { content, fromHistory } = event.nativeEvent;
           const previous = contentText.current;
           contentText.current = content;
           idle.markEdited();
           autoTodo.onChangeContent(previous, content, fromHistory);
-          autoDoodle.onChangeContent(previous, content);
           updateMemo({ content });
         }}
-        onLeaveParagraph={(event) => {
-          autoTodo.onLeaveParagraph(event.nativeEvent);
-          autoDoodle.onLeaveParagraph(event.nativeEvent);
-        }}
+        onLeaveParagraph={(event) => autoTodo.onLeaveParagraph(event.nativeEvent)}
         onBackspaceWhenEmpty={focusTitleEnd}
         onChangeFormat={(event) => setFormatState(event.nativeEvent)}
         onChangeHistory={(event) => setHistory(event.nativeEvent)}
