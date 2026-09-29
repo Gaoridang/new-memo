@@ -484,15 +484,23 @@ final class MemoEditorView: ExpoView, UITextViewDelegate, NSTextStorageDelegate 
     }
     // 바뀌는 모습은 지금 배치를 그림으로 뜨므로, 움직이던 두들 칩은 끝 상태로 둔다.
     finishDoodleAnimation()
-    endKeyboardComposition()
     let selection = textView.selectedRange
+    // 본문에서 쓰고 있는 문단을 바꿀 때만 한글 조합을 끝낸다. 다른 문단은 서식만 바뀌고 글자와 커서는 그대로라,
+    // 다음 줄을 쓰는 중에 바로 바꿔도 조합 중인 글자가 끊기지 않는다. (두들을 붙일 때와 같다)
+    let caretParagraphs = self.paragraphs(touching: selection)
+    if textView.isFirstResponder, converting.contains(where: { caretParagraphs.contains($0.paragraph) }) {
+      endKeyboardComposition()
+    }
     let offset = textView.contentOffset
     storage.beginEditing()
     for change in converting {
       setBlock(change.block, for: change.paragraph)
     }
     storage.endEditing()
-    textView.selectedRange = selection
+    // 선택을 다시 넣으면 키보드에 선택이 바뀌었다고 알려 조합이 끊길 수 있어, 달라졌을 때만 되돌린다.
+    if textView.selectedRange != selection {
+      textView.selectedRange = selection
+    }
     textView.contentOffset = offset
     for change in converting {
       startTransition(for: change.paragraph, from: change.previous, to: change.block)

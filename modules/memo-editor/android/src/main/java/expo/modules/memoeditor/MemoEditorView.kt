@@ -572,7 +572,13 @@ class MemoEditorView(context: Context, appContext: AppContext) :
     val applied = targets.map { it != null }
     if (true !in applied) return applied
 
-    endComposition()
+    // 조합 중인 글자가 바꿀 문단에 있을 때만 조합을 끝낸다. 다른 문단은 스팬만 바뀌고 글자와 커서는 그대로라,
+    // 다음 줄을 쓰는 중에 바로 바꿔도 입력기가 조합하던 글자가 끊기지 않는다. (두들을 붙일 때와 같다)
+    val composingStart = BaseInputConnection.getComposingSpanStart(text)
+    val composingEnd = BaseInputConnection.getComposingSpanEnd(text)
+    if (composingStart != -1 && targets.any { it != null && it.start < composingEnd && composingStart < it.end }) {
+      endComposition()
+    }
     // 바꾸기 전 종류를 알아야 어떤 문단을 애니메이션할지 고른다.
     val converting = targets.mapIndexedNotNull { index, paragraph ->
       paragraph?.let { BlockChange(it, MemoDocument.blockOf(text, it), MemoBlock.fromRaw(changes[index].to)) }
