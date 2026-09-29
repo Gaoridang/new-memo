@@ -49,7 +49,8 @@ export type MemoEditorHandle = {
    */
   setParagraphBlocks(changes: MemoParagraphBlockChange[]): Promise<boolean[]>;
   /**
-   * 두들을 붙인다. 한 번에 붙인 것은 되돌리기 한 번으로 떨어진다. 이미 두들이 있는 문단은 건너뛴다.
+   * 두들을 붙인다. 한 번에 붙인 것은 되돌리기 한 번으로 떨어진다. 한 문단에 여러 낱말을 붙일 수 있고,
+   * 이미 두들이 붙은 낱말(칩이 감싸는 띄어쓰기 사이 전체)은 건너뛴다. 붙인 낱말마다 true를 돌려준다.
    * explicit은 사용자가 누른 동작이다. 자동으로 붙일 때와 달리 되돌린 뒤(다시 하기가 남아 있어도) 붙인다.
    */
   setDoodles(changes: MemoDoodleChange[], explicit: boolean): Promise<boolean[]>;

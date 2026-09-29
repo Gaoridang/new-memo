@@ -5,7 +5,7 @@ import type { MemoDoodleChange, MemoLeaveParagraphEvent } from '../modules/memo-
 import { DOODLES } from './doodles/catalog';
 import { doodleArt } from './doodles/presets';
 import { DoodleIcon } from './icons';
-import { suggestDoodle, type DoodleSuggestion } from './jevApi';
+import { suggestDoodles, type DoodleSuggestion } from './jevApi';
 import { memoBlocks, nearbyLines, type MemoBlock, type MemoDoodle } from './memoStorage';
 import { loadSettings, saveSettings, useSettings } from './settings';
 import type { ShowToast } from './Toast';
@@ -13,8 +13,8 @@ import type { EditorIdle } from './useEditorIdle';
 
 const MIN_LENGTH = 2;
 const MAX_LINE_LENGTH = 500;
-// 메모 하나에 붙이는 두들 수의 상한 (한 줄에는 하나)
-const MAX_PER_MEMO = 30;
+// 메모 하나에 붙이는 두들 수의 상한 (낱말마다 붙으니 한 줄에 여럿일 수 있다)
+const MAX_PER_MEMO = 60;
 // 메모 전체를 훑을 때 묻는 줄 수와, 동시에 보내는 요청 수
 const MAX_SCAN_LINES = 60;
 const SCAN_CONCURRENCY = 5;
@@ -28,8 +28,8 @@ const CONSENT =
 type Pick = DoodleSuggestion & { index: number; text: string };
 
 /**
- * 두들: 메모에서 그림으로 그릴 만한 낱말을 Jev가 고르면, 그 낱말을 그림과 함께 칩으로 바꾼다.
- * - 두들 버튼은 붙이기만 한다. 메모를 훑어 두들이 없는 줄마다 하나씩 붙인다. 그림 세트는 설정 화면에서 고른다.
+ * 두들: 메모에서 그림으로 그릴 만한 낱말을 Jev가 고르면, 그 낱말을 그림과 함께 칩으로 바꾼다. 그림은 낱말마다 붙는다.
+ * - 두들 버튼은 붙이기만 한다. 메모를 훑어 아직 두들이 없는 낱말마다 붙인다. 그림 세트는 설정 화면에서 고른다.
  * - 두들이 붙은 메모에서는 새로 쓴 줄도 다 쓰고 넘어가면 붙인다. 알림은 띄우지 않고 되돌리기로 뗄 수 있다.
  * 두들은 메모 내용이라 붙이는 일은 되돌리기 한 번으로 돌아간다. 떼려면 칩 바로 뒤에서 지운다.
  * 되돌리기나 지우기로 뗀 두들은 이 화면에서 그 줄과 그 낱말에 다시 붙이지 않는다.
@@ -43,7 +43,7 @@ export function useAutoDoodle(getTitle: () => string, getContent: () => string, 
   const scanningRef = useRef(false);
   // 훑는 사이 화면이 닫히거나 새로 훑으면 늦게 온 답은 버린다.
   const scanId = useRef(0);
-  const suggestions = useRef(new Map<string, DoodleSuggestion | null>());
+  const suggestions = useRef(new Map<string, DoodleSuggestion[]>());
   // 두들을 뗀 줄(글자 그대로)과, 뗀 두들(그림과 낱말). 줄을 고쳐 써도 같은 낱말에 같은 그림을 다시 붙이지 않는다.
   const undone = useRef(new Set<string>());
   const declined = useRef(new Set<string>());
@@ -61,16 +61,17 @@ export function useAutoDoodle(getTitle: () => string, getContent: () => string, 
     setScanning(busy);
   }, []);
 
-  /** 줄 하나에 붙일 두들. 같은 줄·제목·주변 줄이면 전에 받은 답을 쓴다. 답을 받지 못하면 undefined */
+  /** 줄 하나에 붙일 두들들 (이미 두들이 붙은 낱말도 들어 있다). 같은 줄·제목·주변 줄이면 전에 받은 답을 쓴다. 답을 받지 못하면 undefined */
   const suggest = useCallback(
-    async (blocks: MemoBlock[], index: number, text: string, title: string): Promise<DoodleSuggestion | null | undefined> => {
+    async (blocks: MemoBlock[], index: number, text: string, title: string): Promise<DoodleSuggestion[] | undefined> => {
       const nearby = nearbyLines(blocks, index, text, NEARBY_BEFORE, NEARBY_AFTER);
       const key = JSON.stringify([title, text, nearby]);
-      if (suggestions.current.has(key)) return suggestions.current.get(key);
-      const answer = await suggestDoodle(title, text, nearby);
+      const known = suggestions.current.get(key);
+      if (known) return known;
+      const answer = await suggestDoodles(title, text, nearby);
       if (answer === null) return undefined;
-      suggestions.current.set(key, answer.doodle);
-      return answer.doodle;
+      suggestions.current.set(key, answer);
+      return answer;
     },
     [],
   );
@@ -80,15 +81,21 @@ export function useAutoDoodle(getTitle: () => string, getContent: () => string, 
       if (!decoratedRef.current || scanningRef.current) return;
       // 줄을 나누며 떠나면 본문 변경보다 이 알림이 먼저 올 수 있어, 줄 내용은 붙이기 직전에 확인한다.
       const blocks = memoBlocks(getContent());
-      if (!canPlace(blocks, index) || !eligible(text) || undone.current.has(text.trim())) return;
+      if (!blocks[index] || !eligible(text) || undone.current.has(text.trim())) return;
 
-      const doodle = await suggest(blocks, index, text, getTitle().trim());
-      if (!doodle || declined.current.has(declineKey(doodle.id, chipWord(text, doodle)))) return;
+      const doodles = await suggest(blocks, index, text, getTitle().trim());
+      if (!doodles?.length) return;
       whenIdle(async (editor) => {
-        if (!decoratedRef.current || !canPlace(memoBlocks(getContent()), index, text)) return;
-        const [added] = await editor.setDoodles([{ index, text, ...change(doodle) }], false);
+        if (!decoratedRef.current) return;
+        const current = memoBlocks(getContent());
+        const room = MAX_PER_MEMO - countDoodles(current);
+        const picks = placeable(current[index], text, doodles)
+          .filter((doodle) => !declined.current.has(declineKey(doodle.id, chipWord(text, doodle))))
+          .slice(0, Math.max(0, room));
+        if (picks.length === 0) return;
+        const applied = await editor.setDoodles(picks.map((doodle) => ({ index, text, ...change(doodle) })), false);
         // 화면에는 알림을 띄우지 않으니 화면 읽기 사용자에게만 알린다.
-        if (added) AccessibilityInfo.announceForAccessibility(`${doodle.word} 옆에 ${doodleName(doodle.id)} 두들을 붙였어요`);
+        announce(picks.filter((_, i) => applied[i]));
       });
     },
     [getContent, getTitle, suggest, whenIdle],
@@ -103,23 +110,25 @@ export function useAutoDoodle(getTitle: () => string, getContent: () => string, 
     setBusy(true);
     const blocks = memoBlocks(getContent());
     const title = getTitle().trim();
-    const targets = blocks
-      .map((block, index) => ({ block, index }))
-      .filter(({ block }) => !block.doodle && eligible(block.text))
-      .slice(0, MAX_SCAN_LINES);
-    const room = MAX_PER_MEMO - blocks.filter((block) => block.doodle).length;
+    // 두들이 붙은 줄에도 아직 붙지 않은 낱말이 있을 수 있어 모든 줄을 본다. 줄이 많으면 두들이 없는 줄부터 본다.
+    const lines = blocks.map((block, index) => ({ block, index })).filter(({ block }) => eligible(block.text));
+    const targets = [
+      ...lines.filter(({ block }) => block.doodles.length === 0),
+      ...lines.filter(({ block }) => block.doodles.length > 0),
+    ].slice(0, MAX_SCAN_LINES);
+    const room = MAX_PER_MEMO - countDoodles(blocks);
 
     const answers = await pool(targets, SCAN_CONCURRENCY, async ({ block, index }) => {
-      const doodle = await suggest(blocks, index, block.text, title);
-      return doodle ? { ...doodle, index, text: block.text } : doodle;
+      const doodles = await suggest(blocks, index, block.text, title);
+      return doodles && placeable(block, undefined, doodles).map((doodle) => ({ ...doodle, index, text: block.text }));
     });
     if (id !== scanId.current) return;
-    // 확실한 줄부터 자리만큼 고르고, 문서 순서로 붙인다. (칩이 위에서부터 차례로 나타난다)
+    // 확실한 낱말부터 자리만큼 고르고, 문서 순서로 붙인다. (칩이 위에서부터 차례로 나타난다)
     const picks = answers
-      .filter((pick): pick is Pick => !!pick)
+      .flatMap((lineAnswer): Pick[] => lineAnswer ?? [])
       .sort((a, b) => b.confidence - a.confidence)
       .slice(0, Math.max(0, room))
-      .sort((a, b) => a.index - b.index);
+      .sort((a, b) => a.index - b.index || a.start - b.start);
     if (picks.length === 0) {
       setBusy(false);
       // 답을 하나도 받지 못했으면 찾지 못한 게 아니라 서버에 닿지 못한 것이다.
@@ -183,27 +192,44 @@ export function useAutoDoodle(getTitle: () => string, getContent: () => string, 
   return { scanning, art, press, onLeaveParagraph, onChangeContent };
 }
 
-const hasDoodles = (blocks: MemoBlock[]) => blocks.some((block) => block.doodle);
+const hasDoodles = (blocks: MemoBlock[]) => blocks.some((block) => block.doodles.length > 0);
+
+const countDoodles = (blocks: MemoBlock[]) => blocks.reduce((sum, block) => sum + block.doodles.length, 0);
 
 const eligible = (text: string) => text.trim().length >= MIN_LENGTH && text.length <= MAX_LINE_LENGTH;
 
 const change = ({ id, word, start, length }: DoodleSuggestion) => ({ id, word, start, length });
 
-/** 한 줄에 하나, 메모에 아직 자리가 남았을 때만. text를 주면 그 줄의 내용도 확인한다. */
-function canPlace(blocks: MemoBlock[], index: number, text?: string) {
-  const block = blocks[index];
-  if (!block || block.doodle || (text !== undefined && block.text !== text)) return false;
-  return blocks.filter((item) => item.doodle).length < MAX_PER_MEMO;
+/**
+ * 그 줄에 지금 붙일 수 있는 두들: 아직 두들이 없는 낱말의 것. text를 주면 그 줄의 내용도 확인한다.
+ * 칩은 띄어쓰기 사이 낱말 전체를 감싸므로, 칩과 조금이라도 겹치는 낱말('청소기칫솔'의 '칫솔')은 이미 붙은 것이다.
+ */
+function placeable<T extends DoodleSuggestion>(block: MemoBlock | undefined, text: string | undefined, doodles: T[]): T[] {
+  if (!block || (text !== undefined && block.text !== text)) return [];
+  return doodles.filter(
+    (doodle) => !block.doodles.some((chip) => doodle.start < chip.start + chip.word.length && chip.start < doodle.start + doodle.length),
+  );
+}
+
+/** 알림 문구. 하나면 그 낱말을, 여럿이면 개수를 말한다. */
+function announce(added: DoodleSuggestion[]) {
+  if (added.length === 0) return;
+  AccessibilityInfo.announceForAccessibility(
+    added.length === 1
+      ? `${added[0].word} 옆에 ${doodleName(added[0].id)} 두들을 붙였어요`
+      : `낱말 ${added.length}개를 두들로 바꿨어요`,
+  );
 }
 
 /** 글자는 그대로인데 두들이 떨어진 줄들과 떨어진 두들 (되돌리기, 칩 뒤에서 지우기) */
 function removedDoodles(previous: MemoBlock[], next: MemoBlock[]): { line: string; doodle: MemoDoodle }[] {
-  const had = new Map<string, MemoDoodle>();
-  for (const block of previous) if (block.doodle) had.set(block.text.trim(), block.doodle);
+  const had = new Map<string, MemoDoodle[]>();
+  for (const block of previous) if (block.doodles.length > 0) had.set(block.text.trim(), block.doodles);
   return next.flatMap((block) => {
     const line = block.text.trim();
-    const doodle = had.get(line);
-    return !block.doodle && doodle ? [{ line, doodle }] : [];
+    // 같은 줄의 같은 자리에 같은 그림이 남아 있으면 그대로다.
+    const kept = new Set(block.doodles.map((doodle) => `${doodle.id}:${doodle.start}`));
+    return (had.get(line) ?? []).filter((doodle) => !kept.has(`${doodle.id}:${doodle.start}`)).map((doodle) => ({ line, doodle }));
   });
 }
 

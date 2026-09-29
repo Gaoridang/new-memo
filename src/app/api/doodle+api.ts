@@ -1,7 +1,8 @@
-import { decideDoodle, doodleCandidates, doodleQuestions, doodleState } from '../../server/doodle';
+import { decideDoodles, doodleCandidates, doodleQuestions, doodleState } from '../../server/doodle';
 import { askJev, jevConfigured, rejectUnlessApp, strings } from '../../server/jev';
 
-// 메모 한 줄에서 두들을 붙일 낱말과 그림을 Jev(TypeSafe AI)에 한 번에 묻는다.
+// 메모 한 줄에서 두들을 붙일 낱말들과 그림을 Jev(TypeSafe AI)에 한 번에 묻는다.
+// doodles가 낱말마다 하나씩이다(확실한 순서). doodle은 그 첫째로, 한 줄에 하나만 알던 예전 앱을 위해 함께 보낸다.
 const MAX_TITLE = 200;
 const MAX_LINE = 500;
 const MAX_NEARBY = 5;
@@ -21,10 +22,11 @@ export async function POST(request: Request) {
     return Response.json({ error: 'bad_request' }, { status: 400 });
   }
   const candidates = doodleCandidates(line);
-  if (candidates.length === 0) return Response.json({ doodle: null });
+  if (candidates.length === 0) return Response.json({ doodle: null, doodles: [] });
 
   const nearby = strings(body?.nearby, MAX_NEARBY, MAX_LINE).filter(Boolean);
   const answers = await askJev(doodleState(title, line.trim(), nearby), doodleQuestions(candidates), TIMEOUT_MS);
   if (!answers?.keyword) return Response.json({ error: 'upstream' }, { status: 502 });
-  return Response.json({ doodle: decideDoodle(answers, candidates) });
+  const doodles = decideDoodles(answers, candidates);
+  return Response.json({ doodle: doodles[0] ?? null, doodles });
 }

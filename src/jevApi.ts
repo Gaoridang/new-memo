@@ -64,23 +64,29 @@ export async function classifyPaste(title: string, lines: string[]): Promise<Pas
 /** 줄의 start부터 length만큼(UTF-16)이 word이고, 그 뒤에 id 그림을 그린다. confidence(0-1)가 높을수록 확실하다. */
 export type DoodleSuggestion = { id: DoodleId; word: string; start: number; length: number; confidence: number };
 
-/** 그림을 붙일 낱말이 없으면 { doodle: null }, 답을 받지 못하면 null */
-export async function suggestDoodle(
-  title: string,
-  line: string,
-  nearby: string[],
-): Promise<{ doodle: DoodleSuggestion | null } | null> {
-  const data = await post<{ doodle?: Partial<DoodleSuggestion> | null }>('/api/doodle', { title, line, nearby }, 5000);
-  if (data?.doodle === null) return { doodle: null };
-  const doodle = data?.doodle;
-  if (!doodle || !isDoodleId(doodle.id) || typeof doodle.start !== 'number' || typeof doodle.length !== 'number') {
-    return null;
+/**
+ * 줄에서 그림을 붙일 낱말들 (확실한 순서). 붙일 낱말이 없으면 빈 배열, 답을 받지 못하면 null.
+ * 한 줄에 하나만 답하던 서버(doodle)도 읽는다.
+ */
+export async function suggestDoodles(title: string, line: string, nearby: string[]): Promise<DoodleSuggestion[] | null> {
+  const data = await post<{ doodles?: unknown; doodle?: unknown }>('/api/doodle', { title, line, nearby }, 5000);
+  const answered = Array.isArray(data?.doodles) ? data.doodles : data?.doodle === null ? [] : data?.doodle ? [data.doodle] : null;
+  if (!answered) return null;
+  const picks: DoodleSuggestion[] = [];
+  for (const item of answered) {
+    const doodle = item as Partial<DoodleSuggestion> | null;
+    if (!doodle || !isDoodleId(doodle.id) || typeof doodle.start !== 'number' || typeof doodle.length !== 'number') continue;
+    const { id } = doodle;
+    const start = doodle.start;
+    const length = doodle.length;
+    // 보낸 줄에서 그 자리의 글자가 word와 같을 때만 믿는다.
+    const word = line.slice(start, start + length);
+    if (!word || word !== doodle.word) continue;
+    // 낱말이 겹치면 확실한 앞쪽만 쓴다.
+    if (picks.some((pick) => start < pick.start + pick.length && pick.start < start + length)) continue;
+    picks.push({ id, word, start, length, confidence: typeof doodle.confidence === 'number' ? doodle.confidence : 0 });
   }
-  // 보낸 줄에서 그 자리의 글자가 word와 같을 때만 믿는다.
-  const word = line.slice(doodle.start, doodle.start + doodle.length);
-  if (!word || word !== doodle.word) return null;
-  const confidence = typeof doodle.confidence === 'number' ? doodle.confidence : 0;
-  return { doodle: { id: doodle.id, word, start: doodle.start, length: doodle.length, confidence } };
+  return picks;
 }
 
 export type SearchLine = { title: string; text: string };

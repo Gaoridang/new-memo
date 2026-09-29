@@ -288,7 +288,7 @@ object MemoDoodles {
   // region Layout
 
   /** start에서 처음 나오는 공백 아닌 글자가 속한 낱말(띄어쓰기 사이). end는 포함하지 않는다. */
-  private fun word(text: CharSequence, start: Int, end: Int): IntRange? {
+  fun word(text: CharSequence, start: Int, end: Int): IntRange? {
     var location = start
     while (location < end && text[location].isWhitespace()) location++
     if (location >= end) return null

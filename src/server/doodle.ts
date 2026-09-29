@@ -1,8 +1,9 @@
 import { DOODLES, isDoodleId, type DoodleId } from '../doodles/catalog';
 import type { JevAnswer } from './jev';
 
-// 메모 한 줄에서 두들을 붙일 낱말과 그 낱말에 맞는 그림을 고른다. (TypeSafe Pre-parsed value extraction 쿡북 방식)
-// 낱말 후보는 코드가 띄어쓰기로 찾고, Jev는 후보 가운데 하나를 고르기만 한다. 그래서 돌려주는 낱말은 늘 줄에 있는 글자 그대로다.
+// 메모 한 줄에서 두들을 붙일 낱말들과 그 낱말에 맞는 그림을 고른다. (TypeSafe Pre-parsed value extraction 쿡북 방식)
+// 낱말 후보는 코드가 띄어쓰기로 찾고, Jev는 후보마다 그림을 고르기만 한다. 그래서 돌려주는 낱말은 늘 줄에 있는 글자 그대로다.
+// 그림은 낱말마다 붙는다. 그림이 있는 낱말은 한 줄에 여럿일 수 있다. ('커피 마시면서 책 읽기'의 커피와 책)
 // 후보는 조사까지 붙은 어절이다. 그림은 '커피'와 '를' 사이가 아니라 '커피를' 뒤에 온다.
 // 붙여 쓴 어절('딸기우유', '청소기칫솔')은 그 속 마지막 두들 낱말로 묻는다. 합성어는 뒤 낱말이 중심이다. (딸기우유는 우유다)
 // 칩은 그래도 어절 전체를 감싼다. (편집기가 칩을 어절 단위로 그린다)
@@ -132,6 +133,9 @@ export function doodleQuestions(candidates: DoodleCandidate[]) {
 // 그릴 게 없는 줄('결론은 이렇다')은 낱말 확률이 대부분 0.1 아래였다.
 const MIN_WORD = 0.2;
 const MIN_DOODLE = 0.7;
+// 낱말 확률은 후보끼리 나누는 값이라 그릴 낱말이 여럿이면 각각 작아진다. 그래서 가장 뚜렷한 낱말(MIN_WORD 이상)이 있는 줄에서만
+// 다른 낱말에도 그림을 붙이고, 그 낱말들은 이 값 이상이면 된다. 그릴 수 없는 낱말('생각', '오늘')은 이 아래에 있다.
+const MIN_EXTRA_WORD = 0.05;
 
 export type RankedDoodle = DoodleCandidate & { id: DoodleId; wordP: number; doodleP: number };
 
@@ -146,17 +150,36 @@ export function rankDoodles(answers: Record<string, JevAnswer>, candidates: Dood
   });
 }
 
+const score = (ranked: RankedDoodle) => ranked.wordP * ranked.doodleP;
+
+const toPick = ({ word, start, length, id, wordP, doodleP }: RankedDoodle): DoodlePick => ({
+  word,
+  start,
+  length,
+  id,
+  confidence: Math.round(wordP * doodleP * 1000) / 1000,
+});
+
 /**
- * 낱말도 그림도 기준을 넘는 후보 가운데 둘의 곱이 가장 큰 것. 없으면 null — 그림은 없어도 괜찮다.
- * 그림은 늘 그 낱말에게 물은 답이라, 뽑힌 낱말과 그림이 어긋나지 않는다.
+ * 그림을 붙일 낱말들. 낱말도 그림도 기준을 넘는 후보 가운데 둘의 곱이 가장 큰 것이 첫째이고,
+ * 첫째가 없으면 그릴 게 없는 줄이라 빈 배열이다. 그림은 없어도 괜찮다.
+ * 첫째 말고도 그림이 기준을 넘고 낱말 확률이 MIN_EXTRA_WORD 이상인 낱말에는 각각 붙인다. (확실한 순서)
+ * 한 줄에 같은 그림은 한 번만 쓴다. ('밥 먹기'의 밥과 먹기는 둘 다 밥그릇이다) 그림은 늘 그 낱말에게 물은 답이라, 낱말과 그림이 어긋나지 않는다.
  */
-export function decideDoodle(answers: Record<string, JevAnswer>, candidates: DoodleCandidate[]): DoodlePick | null {
-  let best: RankedDoodle | null = null;
-  for (const ranked of rankDoodles(answers, candidates)) {
-    if (ranked.wordP < MIN_WORD || ranked.doodleP < MIN_DOODLE) continue;
-    if (!best || ranked.wordP * ranked.doodleP > best.wordP * best.doodleP) best = ranked;
+export function decideDoodles(answers: Record<string, JevAnswer>, candidates: DoodleCandidate[]): DoodlePick[] {
+  const ranked = rankDoodles(answers, candidates).filter((item) => item.doodleP >= MIN_DOODLE);
+  const strongest = ranked
+    .filter((item) => item.wordP >= MIN_WORD)
+    .reduce<RankedDoodle | null>((best, item) => (!best || score(item) > score(best) ? item : best), null);
+  if (!strongest) return [];
+
+  const chosen = [strongest];
+  const used = new Set<string>([strongest.id]);
+  const others = ranked.filter((item) => item !== strongest && item.wordP >= MIN_EXTRA_WORD).sort((a, b) => score(b) - score(a));
+  for (const item of others) {
+    if (used.has(item.id)) continue;
+    used.add(item.id);
+    chosen.push(item);
   }
-  if (!best) return null;
-  const { word, start, length, id, wordP, doodleP } = best;
-  return { word, start, length, id, confidence: Math.round(wordP * doodleP * 1000) / 1000 };
+  return chosen.map(toPick);
 }

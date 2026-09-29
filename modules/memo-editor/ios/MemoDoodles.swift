@@ -169,7 +169,7 @@ enum MemoDoodles {
   }
 
   /// range에서 처음 나오는 공백 아닌 글자가 속한 낱말(띄어쓰기 사이)
-  private static func word(in string: NSString, touching range: NSRange) -> NSRange? {
+  static func word(in string: NSString, touching range: NSRange) -> NSRange? {
     var location = range.location
     while location < NSMaxRange(range) && isSpace(string.character(at: location)) {
       location += 1
