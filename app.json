@@ -9,7 +9,7 @@
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "becomecoseco.newmemo"
+      "bundleIdentifier": "com.becomecoseco.newmemo"
     },
     "android": {
       "adaptiveIcon": {
@@ -19,7 +19,7 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "becomecoseco.newmemo"
+      "package": "com.becomecoseco.newmemo"
     },
     "web": {
       "favicon": "./assets/favicon.png",
